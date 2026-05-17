@@ -1,0 +1,16 @@
+[Unit]
+Description=Go Fast Note Sync daemon
+Documentation=https://github.com/erichll/go-fast-note-sync
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="HOME=%h"
+EnvironmentFile=-%h/.config/go-fast-note-sync/sync.env
+ExecStart=%h/.local/bin/go-fast-note-sync start --config %h/.config/go-fast-note-sync/config.yaml
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target
