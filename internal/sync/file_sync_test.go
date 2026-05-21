@@ -302,7 +302,7 @@ func TestFileSyncChunkDownloadDisorderEmptyThenUpdateCompletes(t *testing.T) {
 	}
 }
 
-func TestHandleFileBinaryChunkRejectsUnknownDuplicateAndOutOfRange(t *testing.T) {
+func TestHandleFileBinaryChunkRejectsUnknownAndDuplicate(t *testing.T) {
 	dir := t.TempDir()
 	svc := newTestService(&config.Config{VaultPath: dir}, nil, filepath.Join(dir, "state.json"))
 	svc.TempChunksBaseDir = filepath.Join(dir, "chunks")
@@ -318,8 +318,6 @@ func TestHandleFileBinaryChunkRejectsUnknownDuplicateAndOutOfRange(t *testing.T)
 		Received:    make(map[uint32]struct{}),
 		ContentHash: h.Content([]byte("ab")),
 	}
-	outOfRange, _ := encodeFileBinaryPayload(testSessionID, 3, []byte("z"))
-	svc.handleFileBinaryChunk(outOfRange)
 	first, _ := encodeFileBinaryPayload(testSessionID, 0, []byte("a"))
 	svc.handleFileBinaryChunk(first)
 	svc.handleFileBinaryChunk(first)
@@ -328,6 +326,41 @@ func TestHandleFileBinaryChunkRejectsUnknownDuplicateAndOutOfRange(t *testing.T)
 	svc.mu.Unlock()
 	if received != 1 {
 		t.Fatalf("duplicate chunk should count once, received=%d", received)
+	}
+}
+
+func TestHandleFileBinaryChunkInvalidIndexAbortsAndReleasesSlot(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{VaultPath: dir, ConcurrencyControlEnabled: true, MaxConcurrentUploads: 1}
+	svc := newTestService(cfg, state.New(), filepath.Join(dir, "state.json"))
+	svc.TempChunksBaseDir = filepath.Join(dir, "chunks")
+	svc.concurrency.WaitForSlot("download_bad.bin", false, 0)
+	svc.fileDownloadSessions[testSessionID] = &FileDownloadSession{
+		Path:        "bad.bin",
+		SessionID:   testSessionID,
+		TotalChunks: 2,
+		Size:        2,
+		TempDir:     filepath.Join(dir, "chunks", testSessionID),
+		Received:    make(map[uint32]struct{}),
+		ContentHash: h.Content([]byte("ab")),
+		SlotHeld:    true,
+	}
+
+	outOfRange, _ := encodeFileBinaryPayload(testSessionID, 3, []byte("z"))
+	svc.handleFileBinaryChunk(outOfRange)
+
+	svc.mu.Lock()
+	_, exists := svc.fileDownloadSessions[testSessionID]
+	_, committed := svc.st.FileHashMap["bad.bin"]
+	svc.mu.Unlock()
+	if exists {
+		t.Fatal("invalid chunk index should abort the download session")
+	}
+	if committed {
+		t.Fatal("invalid chunk index must not commit file state")
+	}
+	if got := len(svc.concurrency.slots); got != 0 {
+		t.Fatalf("held slot count = %d, want 0", got)
 	}
 }
 

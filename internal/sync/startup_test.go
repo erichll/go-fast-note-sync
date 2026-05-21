@@ -773,6 +773,37 @@ func TestScanConfigs_PluginsDir(t *testing.T) {
 	}
 }
 
+func TestScanConfigs_ExcludesFastNoteSyncPluginData(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, ".obsidian", "plugins", "fast-note-sync")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "data.json"), []byte(`{"token":"secret"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(pluginDir, "main.js"), []byte("// ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{VaultPath: dir, ConfigSyncEnabled: true}
+	svc := newTestService(cfg, nil, "")
+	result, err := svc.scanVault(false)
+	if err != nil {
+		t.Fatalf("scanVault: %v", err)
+	}
+	got := make(map[string]bool)
+	for _, c := range result.configs {
+		got[c.Path] = true
+	}
+	if got[".obsidian/plugins/fast-note-sync/data.json"] {
+		t.Fatal("fast-note-sync plugin data.json must not be scanned for SettingSync")
+	}
+	if !got[".obsidian/plugins/fast-note-sync/main.js"] {
+		t.Fatal("non-sensitive fast-note-sync plugin file should still follow normal plugin rules")
+	}
+}
+
 func TestScanConfigs_ThemesDir(t *testing.T) {
 	dir := t.TempDir()
 	themeDir := filepath.Join(dir, ".obsidian", "themes", "my-theme")
@@ -1025,6 +1056,39 @@ func TestComputeConfigDelMissing_MissingIncremental(t *testing.T) {
 	}
 	if len(result.missingConfigs) != 1 || result.missingConfigs[0].Path != ".obsidian/gone.json" {
 		t.Errorf("missingConfigs should contain gone.json, got %v", result.missingConfigs)
+	}
+}
+
+func TestComputeConfigDelMissing_SkipsSensitiveStaleState(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".obsidian"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	st := state.New()
+	st.ConfigHashMap[".obsidian/plugins/fast-note-sync/data.json"] = state.FileHashEntry{Hash: "secret"}
+
+	cfg := &config.Config{
+		VaultPath:                dir,
+		ConfigSyncEnabled:        true,
+		OfflineDeleteSyncEnabled: true,
+	}
+	svc := newTestService(cfg, st, "")
+	result, err := svc.scanVault(false)
+	if err != nil {
+		t.Fatalf("scanVault: %v", err)
+	}
+	if len(result.delConfigs) != 0 || len(result.missingConfigs) != 0 {
+		t.Fatalf("sensitive stale state should not emit del/missing settings: del=%v missing=%v", result.delConfigs, result.missingConfigs)
+	}
+
+	cfg.OfflineDeleteSyncEnabled = false
+	result, err = svc.scanVault(true)
+	if err != nil {
+		t.Fatalf("scanVault incremental: %v", err)
+	}
+	if len(result.delConfigs) != 0 || len(result.missingConfigs) != 0 {
+		t.Fatalf("sensitive stale state should stay silent in incremental mode: del=%v missing=%v", result.delConfigs, result.missingConfigs)
 	}
 }
 

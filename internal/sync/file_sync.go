@@ -579,6 +579,7 @@ func (s *SyncService) handleFileBinaryChunk(payload []byte) {
 	if chunkIndex >= uint32(session.TotalChunks) {
 		s.mu.Unlock()
 		log.Printf("[handler] file binary chunk out of range session=%s chunk=%d total=%d", sessionID, chunkIndex, session.TotalChunks)
+		s.abortDownloadSession(sessionID, "invalid chunk index")
 		return
 	}
 	if _, ok := session.Received[chunkIndex]; ok {

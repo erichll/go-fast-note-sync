@@ -183,6 +183,9 @@ func (s *SyncService) isConfigSyncPathAllowed(rel string) bool {
 	if err != nil {
 		return false
 	}
+	if isSensitivePluginConfigPath(rel) {
+		return false
+	}
 	if strings.HasPrefix(rel, obsidianConfigDir+"/_localStorage/") || rel == obsidianConfigDir+"/_localStorage" {
 		return false
 	}
@@ -210,6 +213,14 @@ func (s *SyncService) isConfigSyncPathAllowed(rel string) bool {
 		}
 	}
 	return false
+}
+
+func isSensitivePluginConfigPath(rel string) bool {
+	rel, err := normalizeSyncPath(rel)
+	if err != nil {
+		return false
+	}
+	return rel == obsidianConfigDir+"/plugins/fast-note-sync/data.json"
 }
 
 func isLocalStorageSettingPath(raw string) bool {

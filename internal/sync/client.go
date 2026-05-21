@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,14 +21,24 @@ import (
 )
 
 const (
-	reconnectBaseDelay   = 3000 * time.Millisecond
+	reconnectBaseDelay   = 1000 * time.Millisecond
+	reconnectMaxDelay    = 30 * time.Minute
 	reconnectMaxAttempts = 15
+	healthCheckTimeout   = 10 * time.Second
 
 	wsTextMessage   = gorillaws.TextMessage
 	wsBinaryMessage = gorillaws.BinaryMessage
 
 	binaryPrefixFileSync = "00"
 )
+
+var nonReconnectCloseReasons = map[string]struct{}{
+	"AuthorizationFaild":    {},
+	"ClientClose":           {},
+	"kicked by admin":       {},
+	"TokenRotatedOrRevoked": {},
+	"broadcast failed":      {},
+}
 
 // WSConn abstracts a WebSocket connection for testability.
 type WSConn interface {
@@ -241,21 +252,30 @@ func systemLocale() string {
 }
 
 // reconnectDelay returns the backoff delay for the n-th reconnect attempt (1-based).
-// Formula: delay = 3000ms × 2^(attempt-1)
+// Formula: 1s, 1s, 1s, 2s, 4s..., capped at 30m.
 func reconnectDelay(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-	shift := attempt - 1
+	if attempt <= 3 {
+		return reconnectBaseDelay
+	}
+	shift := attempt - 3
 	if shift > 30 {
 		shift = 30
 	}
-	return reconnectBaseDelay * (1 << uint(shift))
+	delay := reconnectBaseDelay * (1 << uint(shift))
+	if delay > reconnectMaxDelay {
+		return reconnectMaxDelay
+	}
+	return delay
 }
 
 // Connect starts the connection lifecycle in a goroutine.
 func (s *SyncService) Connect() {
+	s.mu.Lock()
 	s.isRegister = true
+	s.mu.Unlock()
 	go s.connectOnce()
 }
 
@@ -312,7 +332,16 @@ func (s *SyncService) connectOnce() {
 	s.isSyncRequesting = false
 	s.mu.Unlock()
 
-	if s.isRegister && closeReason != "AuthorizationFaild" && closeReason != "ClientClose" {
+	if nonReconnectCloseReason(closeReason) {
+		s.mu.Lock()
+		s.isRegister = false
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Lock()
+	shouldReconnect := s.isRegister
+	s.mu.Unlock()
+	if shouldReconnect {
 		s.scheduleReconnect()
 	}
 }
@@ -323,16 +352,19 @@ func (s *SyncService) connectOnce() {
 func (s *SyncService) checkHealth() (bool, string) {
 	base := strings.TrimRight(s.runAPI, "/")
 	healthURL := base + "/api/health"
+	ctx, cancel := context.WithTimeout(context.Background(), healthCheckTimeout)
+	defer cancel()
 
 	if s.cfg.AutoRedirectEnabled {
 		var redirectURL string
 		client := &http.Client{
+			Timeout: healthCheckTimeout,
 			CheckRedirect: func(req *http.Request, _ []*http.Request) error {
 				redirectURL = req.URL.String()
 				return nil
 			},
 		}
-		req, err := http.NewRequest(http.MethodGet, healthURL, nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 		if err != nil {
 			return false, ""
 		}
@@ -352,7 +384,7 @@ func (s *SyncService) checkHealth() (bool, string) {
 		return resp.StatusCode/100 == 2 || resp.StatusCode == 404, newAPI
 	}
 
-	req, err := http.NewRequest(http.MethodGet, healthURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
 	if err != nil {
 		return false, ""
 	}
@@ -405,6 +437,11 @@ func extractWSCloseReason(err error) string {
 	return ""
 }
 
+func nonReconnectCloseReason(reason string) bool {
+	_, ok := nonReconnectCloseReasons[reason]
+	return ok
+}
+
 // scheduleReconnect waits for the exponential backoff delay then retries.
 func (s *SyncService) scheduleReconnect() {
 	s.timeConnect++
@@ -415,7 +452,10 @@ func (s *SyncService) scheduleReconnect() {
 	delay := reconnectDelay(s.timeConnect)
 	log.Printf("[ws] reconnecting in %v (attempt %d/%d)", delay, s.timeConnect, reconnectMaxAttempts)
 	s.sleepFn(delay)
-	if s.isRegister {
+	s.mu.Lock()
+	shouldReconnect := s.isRegister
+	s.mu.Unlock()
+	if shouldReconnect {
 		s.connectOnce()
 	}
 }

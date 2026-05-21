@@ -161,6 +161,7 @@ func TestHandleLocalEventsSkipPolicyScopeAndEcho(t *testing.T) {
 		{name: "socket open unauthenticated", setup: func(s *SyncService) { s.isAuth = false }, event: local.PathEvent{Path: "a.md"}},
 		{name: "config disabled", setup: func(s *SyncService) { s.cfg.ConfigSyncEnabled = false }, event: local.PathEvent{Path: ".obsidian/app.json"}},
 		{name: "config denied", event: local.PathEvent{Path: ".obsidian/workspace.json"}},
+		{name: "fast note sync plugin data", event: local.PathEvent{Path: ".obsidian/plugins/fast-note-sync/data.json"}},
 		{name: "excluded file", event: local.PathEvent{Path: "excluded/a.md"}},
 		{name: "unsafe path", event: local.PathEvent{Path: "../a.md"}},
 	}
@@ -179,6 +180,40 @@ func TestHandleLocalEventsSkipPolicyScopeAndEcho(t *testing.T) {
 			}
 			if len(conn.written) != 0 {
 				t.Fatalf("unexpected writes: %#v", conn.written)
+			}
+		})
+	}
+}
+
+func TestSensitivePluginConfigLocalEventsDoNotEmitSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		run  func(*SyncService) local.Result
+	}{
+		{
+			name: "modify",
+			run: func(s *SyncService) local.Result {
+				return s.HandleLocalModify(local.PathEvent{Path: ".obsidian/plugins/fast-note-sync/data.json"})
+			},
+		},
+		{
+			name: "delete",
+			run: func(s *SyncService) local.Result {
+				return s.HandleLocalDelete(local.PathEvent{Path: ".obsidian/plugins/fast-note-sync/data.json"})
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, conn, vault := newLocalEventService(t)
+			writeVaultFile(t, vault, ".obsidian/plugins/fast-note-sync/data.json", `{"token":"secret"}`)
+			got := tc.run(svc)
+			if got.Attempted || got.Err != nil {
+				t.Fatalf("result = %+v, want skip", got)
+			}
+			for _, write := range conn.written {
+				if strings.HasPrefix(write, "SettingModify|") || strings.HasPrefix(write, "SettingDelete|") {
+					t.Fatalf("sensitive plugin data emitted setting sync message: %#v", conn.written)
+				}
 			}
 		})
 	}

@@ -702,6 +702,66 @@ func TestHandleSettingSyncModify_SkipsLocalStorage(t *testing.T) {
 	}
 }
 
+func TestRemoteSettingSyncSkipsFastNoteSyncPluginData(t *testing.T) {
+	dir := t.TempDir()
+	sensitiveRel := ".obsidian/plugins/fast-note-sync/data.json"
+	sensitiveAbs := filepath.Join(dir, filepath.FromSlash(sensitiveRel))
+	if err := os.MkdirAll(filepath.Dir(sensitiveAbs), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sensitiveAbs, []byte(`{"token":"local"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{Vault: "V", VaultPath: dir, ConfigSyncEnabled: true}
+	svc := newTestService(cfg, state.New(), filepath.Join(dir, "state.json"))
+	conn := &fakeWSConn{}
+	svc.conn = conn
+	svc.st.ConfigHashMap[sensitiveRel] = state.FileHashEntry{Hash: "old"}
+	svc.pendingConfigModifies[sensitiveRel] = "pending"
+
+	modifyMsg, _ := json.Marshal(receiveContentMessage{
+		Path:        sensitiveRel,
+		Content:     `{"token":"remote"}`,
+		ContentHash: h.Content([]byte(`{"token":"remote"}`)),
+		MTime:       100,
+		LastTime:    10,
+	})
+	handleSettingSyncModify(modifyMsg, svc)
+	needMsg, _ := json.Marshal(receivePathMessage{Path: sensitiveRel, LastTime: 11})
+	handleSettingSyncNeedUpload(needMsg, svc)
+	mtimeMsg, _ := json.Marshal(receiveMtimeMessage{Path: sensitiveRel, MTime: 200, LastTime: 12})
+	handleSettingSyncMtime(mtimeMsg, svc)
+	deleteMsg, _ := json.Marshal(receivePathMessage{Path: sensitiveRel, LastTime: 13})
+	handleSettingSyncDelete(deleteMsg, svc)
+
+	got, err := os.ReadFile(sensitiveAbs)
+	if err != nil {
+		t.Fatalf("read sensitive config: %v", err)
+	}
+	if string(got) != `{"token":"local"}` {
+		t.Fatalf("sensitive config changed to %q", string(got))
+	}
+	svc.mu.Lock()
+	entry := svc.st.ConfigHashMap[sensitiveRel]
+	_, pending := svc.pendingConfigModifies[sensitiveRel]
+	completed := svc.configSyncTasks.Completed
+	lastTime := svc.st.ConfigSyncTime
+	_, ignoredMtime := svc.lastSyncMtime[sensitiveRel]
+	svc.mu.Unlock()
+	if entry.Hash != "old" || !pending || ignoredMtime {
+		t.Fatalf("sensitive state changed: entry=%+v pending=%v ignoredMtime=%v", entry, pending, ignoredMtime)
+	}
+	if lastTime != 0 {
+		t.Fatalf("sensitive remote handlers should not update ConfigSyncTime, got %d", lastTime)
+	}
+	if completed != 4 {
+		t.Fatalf("Completed = %d, want 4", completed)
+	}
+	if len(conn.written) != 0 {
+		t.Fatalf("sensitive remote handlers should not emit uploads, wrote %#v", conn.written)
+	}
+}
+
 func TestHandleFolderSyncRename_RenamesSnapshotAndDirectory(t *testing.T) {
 	dir := t.TempDir()
 	os.Mkdir(filepath.Join(dir, "old"), 0o755)
@@ -896,6 +956,9 @@ func TestM14LocalSendHelpersAndRuntimeHelpers(t *testing.T) {
 	}
 	if svc.isConfigSyncPathAllowed(".obsidian/workspace.json") {
 		t.Fatal("workspace.json should be excluded from config sync")
+	}
+	if svc.isConfigSyncPathAllowed(".obsidian/plugins/fast-note-sync/data.json") {
+		t.Fatal("fast-note-sync plugin data.json should be excluded from config sync")
 	}
 
 	if err := svc.SendNoteDelete("note.md"); err != nil {

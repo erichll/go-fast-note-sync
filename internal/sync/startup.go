@@ -654,6 +654,9 @@ func (s *SyncService) computeConfigDelMissing(configHashMap map[string]state.Fil
 		localConfigs[c.Path] = struct{}{}
 	}
 	for path := range configHashMap {
+		if !s.isConfigSyncPathAllowed(path) {
+			continue
+		}
 		if _, local := localConfigs[path]; local {
 			continue
 		}
@@ -674,6 +677,9 @@ func (s *SyncService) scanConfigs(vaultPath string, configHashMap map[string]sta
 	}
 
 	addConfig := func(absPath, relPath string) {
+		if !s.isConfigSyncPathAllowed(relPath) {
+			return
+		}
 		info, err := os.Stat(absPath)
 		if err != nil {
 			return

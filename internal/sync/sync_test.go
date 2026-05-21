@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	gorillaws "github.com/gorilla/websocket"
+
 	"github.com/erichll/go-fast-note-sync/internal/config"
 	"github.com/erichll/go-fast-note-sync/internal/state"
 )
@@ -81,12 +83,26 @@ func (f *fakeDialer) Dial(urlStr string, _ http.Header) (WSConn, *http.Response,
 	return f.conn, &http.Response{StatusCode: 101}, nil
 }
 
+type blockingDialer struct {
+	conn    *fakeWSConn
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingDialer) Dial(_ string, _ http.Header) (WSConn, *http.Response, error) {
+	close(b.entered)
+	<-b.release
+	return b.conn, &http.Response{StatusCode: 101}, nil
+}
+
 type fakeHTTPDoer struct {
 	statusCode int
 	err        error
+	req        *http.Request
 }
 
-func (f *fakeHTTPDoer) Do(_ *http.Request) (*http.Response, error) {
+func (f *fakeHTTPDoer) Do(req *http.Request) (*http.Response, error) {
+	f.req = req
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -291,11 +307,11 @@ func TestReconnectDelay_Formula(t *testing.T) {
 		attempt int
 		want    time.Duration
 	}{
-		{1, 3000 * time.Millisecond},
-		{2, 6000 * time.Millisecond},
-		{3, 12000 * time.Millisecond},
-		{4, 24000 * time.Millisecond},
-		{5, 48000 * time.Millisecond},
+		{1, 1 * time.Second},
+		{2, 1 * time.Second},
+		{3, 1 * time.Second},
+		{4, 2 * time.Second},
+		{5, 4 * time.Second},
 	}
 	for _, tc := range cases {
 		got := reconnectDelay(tc.attempt)
@@ -307,7 +323,7 @@ func TestReconnectDelay_Formula(t *testing.T) {
 
 func TestReconnectDelay_Attempt15(t *testing.T) {
 	got := reconnectDelay(reconnectMaxAttempts)
-	want := reconnectBaseDelay * (1 << 14)
+	want := reconnectMaxDelay
 	if got != want {
 		t.Errorf("reconnectDelay(15) = %v, want %v", got, want)
 	}
@@ -440,6 +456,75 @@ func TestAuthorization_FailureCodes(t *testing.T) {
 		}
 		if len(fc.written) != 0 {
 			t.Errorf("code=%d: no messages should be written on auth failure, got %v", code, fc.written)
+		}
+	}
+}
+
+func TestFormatAuthorizationError_KnownCodesAndRedaction(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     Envelope
+		want    []string
+		notWant []string
+	}{
+		{
+			name: "reimport 307",
+			env:  Envelope{Code: 307},
+			want: []string{"Code=307", "Authorization token is missing", "Please re-import"},
+		},
+		{
+			name: "reimport 310",
+			env:  Envelope{Code: 310, Details: "token abc123 expired"},
+			want: []string{"Code=310", "Authorization token has expired", "Details=token [redacted] expired", "Please re-import"},
+		},
+		{
+			name:    "generic 311",
+			env:     Envelope{Code: 311},
+			want:    []string{"Code=311", "Authorization failed"},
+			notWant: []string{"Please re-import", "undefined"},
+		},
+		{
+			name:    "restriction 315",
+			env:     Envelope{Code: 315, Details: "Permission denied"},
+			want:    []string{"Code=315", "Authorization token scope is restricted", "Details=Permission denied"},
+			notWant: []string{"Please re-import"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatAuthorizationError(tt.env, "abc123")
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("formatAuthorizationError() = %q, missing %q", got, want)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(got, notWant) {
+					t.Fatalf("formatAuthorizationError() = %q, should not contain %q", got, notWant)
+				}
+			}
+			if strings.Contains(got, "abc123") {
+				t.Fatalf("formatAuthorizationError() leaked token: %q", got)
+			}
+		})
+	}
+}
+
+func TestFormatAuthorizationError_RestrictionCodes(t *testing.T) {
+	wantByCode := map[int]string{
+		312: "Authorization token is restricted by IP",
+		313: "Authorization token is restricted by user agent",
+		314: "Authorization token is restricted by client",
+		315: "Authorization token scope is restricted",
+	}
+	for code, want := range wantByCode {
+		got := formatAuthorizationError(Envelope{Code: code}, "")
+		if !strings.Contains(got, want) {
+			t.Errorf("code %d formatted as %q, want %q", code, got, want)
+		}
+		if strings.Contains(got, "Please re-import") {
+			t.Errorf("code %d should not include re-import hint: %q", code, got)
 		}
 	}
 }
@@ -740,6 +825,28 @@ func TestCheckHealth_Error(t *testing.T) {
 	}
 }
 
+func TestCheckHealth_UsesBoundedTimeout(t *testing.T) {
+	fake := &fakeHTTPDoer{statusCode: 200}
+	svc := newTestService(nil, nil, "")
+	svc.httpDoer = fake
+
+	healthy, _ := svc.checkHealth()
+	if !healthy {
+		t.Fatal("expected healthy response")
+	}
+	if fake.req == nil {
+		t.Fatal("fake HTTP doer did not receive request")
+	}
+	deadline, ok := fake.req.Context().Deadline()
+	if !ok {
+		t.Fatal("health check request should have a context deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 || remaining > healthCheckTimeout {
+		t.Fatalf("deadline remaining = %v, want within %v", remaining, healthCheckTimeout)
+	}
+}
+
 // ---- Send tests ----
 
 func TestSend_StringPayload(t *testing.T) {
@@ -1015,6 +1122,70 @@ func TestScheduleReconnect_SecondAttemptDelay(t *testing.T) {
 	}
 }
 
+func TestReconnectDelay_UpstreamPatternAndCap(t *testing.T) {
+	want := map[int]time.Duration{
+		1:  1 * time.Second,
+		2:  1 * time.Second,
+		3:  1 * time.Second,
+		4:  2 * time.Second,
+		5:  4 * time.Second,
+		14: 30 * time.Minute,
+		15: 30 * time.Minute,
+	}
+	for attempt, delay := range want {
+		if got := reconnectDelay(attempt); got != delay {
+			t.Errorf("reconnectDelay(%d) = %v, want %v", attempt, got, delay)
+		}
+	}
+}
+
+func TestNonReconnectCloseReasons(t *testing.T) {
+	for _, reason := range []string{
+		"AuthorizationFaild",
+		"ClientClose",
+		"kicked by admin",
+		"TokenRotatedOrRevoked",
+		"broadcast failed",
+	} {
+		if !nonReconnectCloseReason(reason) {
+			t.Errorf("reason %q should be non-reconnect", reason)
+		}
+	}
+	if nonReconnectCloseReason("temporary network error") {
+		t.Fatal("temporary network close should remain reconnectable")
+	}
+}
+
+func TestConnectOnce_NonReconnectCloseReasonsDisableRegister(t *testing.T) {
+	for _, reason := range []string{
+		"AuthorizationFaild",
+		"ClientClose",
+		"kicked by admin",
+		"TokenRotatedOrRevoked",
+		"broadcast failed",
+	} {
+		t.Run(reason, func(t *testing.T) {
+			svc := newTestService(nil, nil, filepath.Join(t.TempDir(), "state.json"))
+			svc.httpDoer = &fakeHTTPDoer{statusCode: 200}
+			svc.isRegister = true
+			sleepCalled := false
+			svc.sleepFn = func(time.Duration) { sleepCalled = true }
+			svc.dialer = &fakeDialer{conn: &fakeWSConn{
+				messages: []wsMsg{{err: &gorillaws.CloseError{Code: gorillaws.CloseNormalClosure, Text: reason}}},
+			}}
+
+			svc.connectOnce()
+
+			if sleepCalled {
+				t.Fatal("non-reconnect close reason should not schedule reconnect")
+			}
+			if svc.isRegister {
+				t.Fatal("non-reconnect close reason should unregister the service")
+			}
+		})
+	}
+}
+
 // ---- connectOnce error-path tests ----
 
 func TestConnectOnce_HealthCheckFails(t *testing.T) {
@@ -1082,19 +1253,27 @@ func TestConnectOnce_AuthorizationFaild_NoReconnect(t *testing.T) {
 
 func TestConnect_SetsIsRegister(t *testing.T) {
 	svc := newTestService(nil, nil, "")
-	// Wire up fake dependencies so the goroutine terminates quickly
+	// Block the goroutine in Dial so the assertion below cannot race with the
+	// non-reconnect close path resetting isRegister.
 	svc.httpDoer = &fakeHTTPDoer{statusCode: 200}
-	svc.dialer = &fakeDialer{conn: &fakeWSConn{
-		messages: []wsMsg{{err: fmt.Errorf("closed")}},
-	}}
+	dialer := &blockingDialer{
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+		conn: &fakeWSConn{
+			messages: []wsMsg{{err: &gorillaws.CloseError{Code: gorillaws.CloseNormalClosure, Text: "ClientClose"}}},
+		},
+	}
+	svc.dialer = dialer
 
 	if svc.isRegister {
 		t.Error("isRegister should start false")
 	}
 	svc.Connect()
+	<-dialer.entered
 	if !svc.isRegister {
 		t.Error("Connect should set isRegister=true before launching goroutine")
 	}
+	close(dialer.release)
 	// Allow the goroutine to finish (it does a health check + dial + read loop)
 	time.Sleep(50 * time.Millisecond)
 }

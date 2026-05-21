@@ -66,11 +66,11 @@ func handleSettingSyncModify(data json.RawMessage, s *SyncService) {
 		return
 	}
 	defer s.incrementCompleted("config")
-	s.updateSyncTime("config", msg.LastTime)
-	if isLocalStorageSettingPath(msg.Path) {
-		log.Printf("[handler] SettingSyncModify skip localStorage path %q", msg.Path)
+	if isLocalStorageSettingPath(msg.Path) || isSensitivePluginConfigPath(msg.Path) {
+		log.Printf("[handler] SettingSyncModify skip excluded config path %q", msg.Path)
 		return
 	}
+	s.updateSyncTime("config", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || !s.isConfigSyncPathAllowed(rp.Rel) {
 		if err != nil {
@@ -115,12 +115,12 @@ func handleSettingSyncNeedUpload(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("config")
 		return
 	}
-	s.updateSyncTime("config", msg.LastTime)
-	if isLocalStorageSettingPath(msg.Path) {
-		log.Printf("[handler] SettingSyncNeedUpload skip localStorage path %q", msg.Path)
+	if isLocalStorageSettingPath(msg.Path) || isSensitivePluginConfigPath(msg.Path) {
+		log.Printf("[handler] SettingSyncNeedUpload skip excluded config path %q", msg.Path)
 		s.incrementCompleted("config")
 		return
 	}
+	s.updateSyncTime("config", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || s.cfg.ReadOnlySyncEnabled || !s.isConfigSyncPathAllowed(rp.Rel) {
 		s.incrementCompleted("config")
@@ -143,10 +143,10 @@ func handleSettingSyncMtime(data json.RawMessage, s *SyncService) {
 		return
 	}
 	defer s.incrementCompleted("config")
-	s.updateSyncTime("config", msg.LastTime)
-	if isLocalStorageSettingPath(msg.Path) {
+	if isLocalStorageSettingPath(msg.Path) || isSensitivePluginConfigPath(msg.Path) {
 		return
 	}
+	s.updateSyncTime("config", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || !s.isConfigSyncPathAllowed(rp.Rel) {
 		return
@@ -182,10 +182,10 @@ func handleSettingSyncDelete(data json.RawMessage, s *SyncService) {
 		return
 	}
 	defer s.incrementCompleted("config")
-	s.updateSyncTime("config", msg.LastTime)
-	if isLocalStorageSettingPath(msg.Path) {
+	if isLocalStorageSettingPath(msg.Path) || isSensitivePluginConfigPath(msg.Path) {
 		return
 	}
+	s.updateSyncTime("config", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || !s.isConfigSyncPathAllowed(rp.Rel) {
 		return
