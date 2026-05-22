@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	stdsync "sync"
@@ -26,6 +27,12 @@ type wsMsg struct {
 	err   error
 }
 
+type controlFrame struct {
+	messageType int
+	data        []byte
+	deadline    time.Time
+}
+
 type fakeWSConn struct {
 	mu       stdsync.Mutex
 	messages []wsMsg
@@ -34,15 +41,77 @@ type fakeWSConn struct {
 	wtypes   []int
 	closed   bool
 	writeErr error
+
+	// M1.9 fields — all protected by mu except chan values themselves.
+	readDeadline    time.Time
+	pongHandler     func(string) error
+	controlWrites   []controlFrame
+	writeControlErr error
+	blockOnEmpty    bool
+	expireCh        chan struct{} // capacity-1, non-closing; used to wake ReadMessage on deadline change
+	messageCh       chan struct{} // capacity-1, non-closing; used to wake ReadMessage on new message
+	closeCh         chan struct{} // closed once by closeOnce when Close() is called
+	closeOnce       stdsync.Once
 }
 
-func (f *fakeWSConn) ReadMessage() (int, []byte, error) {
-	if f.idx >= len(f.messages) {
-		return 0, nil, fmt.Errorf("connection closed")
+// newFakeWSConn constructs a fakeWSConn with all M1.9 channels initialized.
+// New tests should use this constructor; old tests may still use struct literals.
+func newFakeWSConn(messages ...wsMsg) *fakeWSConn {
+	return &fakeWSConn{
+		messages:  messages,
+		expireCh:  make(chan struct{}, 1),
+		messageCh: make(chan struct{}, 1),
+		closeCh:   make(chan struct{}),
 	}
-	m := f.messages[f.idx]
-	f.idx++
-	return m.mtype, m.data, m.err
+}
+
+// ReadMessage returns the next message.
+// Default (blockOnEmpty=false): returns "connection closed" when messages are exhausted.
+// blockOnEmpty=true: blocks until a message arrives, the read deadline expires, or Close() is called.
+func (f *fakeWSConn) ReadMessage() (int, []byte, error) {
+	if !f.blockOnEmpty {
+		if f.idx >= len(f.messages) {
+			return 0, nil, fmt.Errorf("connection closed")
+		}
+		m := f.messages[f.idx]
+		f.idx++
+		return m.mtype, m.data, m.err
+	}
+
+	for {
+		f.mu.Lock()
+		if f.idx < len(f.messages) {
+			m := f.messages[f.idx]
+			f.idx++
+			f.mu.Unlock()
+			return m.mtype, m.data, m.err
+		}
+		dl := f.readDeadline
+		f.mu.Unlock()
+
+		var wait time.Duration
+		if dl.IsZero() {
+			wait = 24 * time.Hour
+		} else {
+			wait = time.Until(dl)
+		}
+		if wait <= 0 {
+			return 0, nil, os.ErrDeadlineExceeded
+		}
+
+		select {
+		case <-time.After(wait):
+			return 0, nil, os.ErrDeadlineExceeded
+		case <-f.expireCh:
+			// Deadline was refreshed; re-read and recalculate wait.
+			continue
+		case <-f.messageCh:
+			// A message was pushed; retry the loop.
+			continue
+		case <-f.closeCh:
+			return 0, nil, fmt.Errorf("connection closed")
+		}
+	}
 }
 
 func (f *fakeWSConn) WriteMessage(mtype int, data []byte) error {
@@ -56,6 +125,33 @@ func (f *fakeWSConn) WriteMessage(mtype int, data []byte) error {
 	return nil
 }
 
+func (f *fakeWSConn) WriteControl(messageType int, data []byte, deadline time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.controlWrites = append(f.controlWrites, controlFrame{messageType, data, deadline})
+	if f.writeControlErr != nil {
+		return f.writeControlErr
+	}
+	return nil
+}
+
+func (f *fakeWSConn) SetReadDeadline(t time.Time) error {
+	f.mu.Lock()
+	f.readDeadline = t
+	select {
+	case f.expireCh <- struct{}{}:
+	default:
+	}
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeWSConn) SetPongHandler(h func(string) error) {
+	f.mu.Lock()
+	f.pongHandler = h
+	f.mu.Unlock()
+}
+
 func (f *fakeWSConn) Written() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -65,8 +161,54 @@ func (f *fakeWSConn) Written() []string {
 }
 
 func (f *fakeWSConn) Close() error {
+	f.mu.Lock()
 	f.closed = true
+	f.mu.Unlock()
+	f.closeOnce.Do(func() {
+		if f.closeCh != nil {
+			close(f.closeCh)
+		}
+	})
 	return nil
+}
+
+// TriggerPong simulates receiving a WebSocket pong frame.
+func (f *fakeWSConn) TriggerPong() {
+	f.mu.Lock()
+	h := f.pongHandler
+	f.mu.Unlock()
+	if h != nil {
+		h("") //nolint:errcheck
+	}
+}
+
+// ExpireReadDeadlineNow sets the read deadline to the past and wakes ReadMessage.
+func (f *fakeWSConn) ExpireReadDeadlineNow() {
+	f.mu.Lock()
+	f.readDeadline = time.Now().Add(-time.Second)
+	select {
+	case f.expireCh <- struct{}{}:
+	default:
+	}
+	f.mu.Unlock()
+}
+
+// PushMessage appends a message and wakes a blocking ReadMessage.
+func (f *fakeWSConn) PushMessage(mtype int, data []byte) {
+	f.mu.Lock()
+	f.messages = append(f.messages, wsMsg{mtype, data, nil})
+	f.mu.Unlock()
+	select {
+	case f.messageCh <- struct{}{}:
+	default:
+	}
+}
+
+// GetReadDeadline returns a copy of the current read deadline.
+func (f *fakeWSConn) GetReadDeadline() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.readDeadline
 }
 
 type fakeDialer struct {
@@ -93,6 +235,41 @@ func (b *blockingDialer) Dial(_ string, _ http.Header) (WSConn, *http.Response, 
 	close(b.entered)
 	<-b.release
 	return b.conn, &http.Response{StatusCode: 101}, nil
+}
+
+// countingDialer creates a fresh fakeWSConn via factory on each Dial call.
+// Used by M1.9 keepalive tests; old tests keep using fakeDialer/blockingDialer.
+type countingDialer struct {
+	mu        stdsync.Mutex
+	factory   func() *fakeWSConn
+	dialCount int
+	lastConn  *fakeWSConn
+	onDial    chan struct{} // buffered; receives a token after each Dial
+}
+
+func (d *countingDialer) Dial(_ string, _ http.Header) (WSConn, *http.Response, error) {
+	d.mu.Lock()
+	d.dialCount++
+	conn := d.factory()
+	d.lastConn = conn
+	d.mu.Unlock()
+	select {
+	case d.onDial <- struct{}{}:
+	default:
+	}
+	return conn, &http.Response{StatusCode: 101}, nil
+}
+
+func (d *countingDialer) DialCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.dialCount
+}
+
+func (d *countingDialer) LastConn() *fakeWSConn {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lastConn
 }
 
 type fakeHTTPDoer struct {

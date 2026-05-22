@@ -165,7 +165,6 @@ Sync modules: **NoteSync**, **FileSync**, **SettingSync**, **FolderSync** — ea
 - `status` and manual `sync` commands are not yet implemented
 - No CI pipeline configured
 - `SendFolderModify` updates folder snapshot in memory only; a crash before next state save can lose the delta
-- WebSocket client has no read deadline / pong handler; reconnect depends on the server closing the socket
 
 ## License
 

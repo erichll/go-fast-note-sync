@@ -32,6 +32,13 @@ const (
 	binaryPrefixFileSync = "00"
 )
 
+// Keepalive timing vars; var (not const) so tests can override.
+var (
+	pingInterval = 54 * time.Second // ≈ pongWait * 0.6; first ping fires at t≈54s
+	pongWait     = 90 * time.Second // max wall-clock window before conn is judged dead
+	writeWait    = 10 * time.Second // write deadline for ping control frames
+)
+
 var nonReconnectCloseReasons = map[string]struct{}{
 	"AuthorizationFaild":    {},
 	"ClientClose":           {},
@@ -44,6 +51,9 @@ var nonReconnectCloseReasons = map[string]struct{}{
 type WSConn interface {
 	ReadMessage() (messageType int, p []byte, err error)
 	WriteMessage(messageType int, data []byte) error
+	WriteControl(messageType int, data []byte, deadline time.Time) error
+	SetReadDeadline(t time.Time) error
+	SetPongHandler(h func(appData string) error)
 	Close() error
 }
 
@@ -154,6 +164,8 @@ type SyncService struct {
 
 	concurrency *ConcurrencyManager
 	pathLocks   map[string]chan struct{}
+
+	pingWG stdsync.WaitGroup
 }
 
 // NewSyncService creates a SyncService with production defaults.
@@ -311,6 +323,17 @@ func (s *SyncService) connectOnce() {
 		log.Printf("[ws] save state after connect: %v", saveErr)
 	}
 
+	// Set up keepalive on the local conn before handing it to readLoop.
+	if err := conn.SetReadDeadline(time.Now().Add(pongWait)); err != nil {
+		log.Printf("[ws] set read deadline: %v", err)
+	}
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongWait))
+	})
+	done := make(chan struct{})
+	s.pingWG.Add(1)
+	go s.pingLoop(conn, done)
+
 	s.mu.Lock()
 	s.conn = conn
 	s.isOpen = true
@@ -324,6 +347,7 @@ func (s *SyncService) connectOnce() {
 	}
 
 	closeReason := s.readLoop()
+	close(done)
 
 	s.mu.Lock()
 	s.isOpen = false
@@ -457,6 +481,24 @@ func (s *SyncService) scheduleReconnect() {
 	s.mu.Unlock()
 	if shouldReconnect {
 		s.connectOnce()
+	}
+}
+
+// pingLoop sends periodic WebSocket ping control frames until done is closed.
+// It uses WriteControl (not WriteMessage) to avoid contending with the write mutex.
+func (s *SyncService) pingLoop(conn WSConn, done <-chan struct{}) {
+	defer s.pingWG.Done()
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			if err := conn.WriteControl(gorillaws.PingMessage, nil, time.Now().Add(writeWait)); err != nil {
+				log.Printf("[ws] ping write: %v", err)
+			}
+		}
 	}
 }
 
