@@ -66,6 +66,22 @@ go-fast-note-sync start
 go-fast-note-sync start --config /path/to/config.yaml
 ```
 
+**查看同步状态（离线）**
+
+```bash
+go-fast-note-sync status
+# 输出 vault、api、同步开关、各模块最后同步时间、缓存计数和 pending 计数
+```
+
+**触发一次性同步后退出**
+
+```bash
+go-fast-note-sync sync
+# 连接服务、等待启动同步轮完成后以 exit 0 退出
+# 使用 --timeout 覆盖默认 60s 超时：
+go-fast-note-sync sync --timeout 120s
+```
+
 ## 配置项说明
 
 | 配置项 | 默认值 | 说明 |
@@ -159,11 +175,6 @@ test/smoke/       集成冒烟测试套件
 - 二进制帧格式：2 字节前缀（`00`）+ 36 字节 session ID + 4 字节分片索引 + 数据
 
 同步模块：**NoteSync**、**FileSync**、**SettingSync**、**FolderSync**，每个模块均有 `*SyncEnd` 完成信号。
-
-## 已知限制
-
-- `status` 和手动 `sync` 命令尚未实现
-- `SendFolderModify` 仅在内存中更新文件夹快照；崩溃发生在下次状态保存之前时会丢失该增量
 
 ## 开源协议
 

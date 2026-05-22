@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/erichll/go-fast-note-sync/internal/config"
 	"github.com/erichll/go-fast-note-sync/internal/local"
@@ -46,6 +49,7 @@ var waitForSignal = func() os.Signal {
 type syncDaemon interface {
 	local.Handler
 	Connect()
+	SyncComplete() <-chan struct{}
 }
 
 type localWatcher interface {
@@ -105,23 +109,113 @@ func newStartCmd() *cobra.Command {
 }
 
 func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	var cfgPath string
+	cmd := &cobra.Command{
 		Use:   "status",
-		Short: "Show sync status",
+		Short: "Show sync status (offline)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("not implemented")
+			if cfgPath == "" {
+				cfgPath = config.DefaultPath()
+			}
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			statePath := cfg.StateFile
+			if statePath == "" {
+				statePath = state.DefaultPath()
+			}
+			st, err := state.Load(statePath)
+			if err != nil {
+				return fmt.Errorf("load state: %w", err)
+			}
+
+			fmtTime := func(ms int64) string {
+				if ms == 0 {
+					return "never"
+				}
+				return time.UnixMilli(ms).UTC().Format(time.RFC3339)
+			}
+
+			noteCount := 0
+			fileCount := 0
+			for path := range st.FileHashMap {
+				if strings.HasSuffix(strings.ToLower(path), ".md") {
+					noteCount++
+				} else {
+					fileCount++
+				}
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "vault: %s\n", cfg.Vault)
+			fmt.Fprintf(out, "api: %s\n", cfg.API)
+			fmt.Fprintf(out, "sync_enabled: %v\n", cfg.SyncEnabled)
+			fmt.Fprintf(out, "config_sync_enabled: %v\n", cfg.ConfigSyncEnabled)
+			fmt.Fprintf(out, "readonly_sync_enabled: %v\n", cfg.ReadOnlySyncEnabled)
+			fmt.Fprintf(out, "manual_sync_enabled: %v\n", cfg.ManualSyncEnabled)
+			fmt.Fprintf(out, "note_sync_time: %s\n", fmtTime(st.NoteSyncTime))
+			fmt.Fprintf(out, "file_sync_time: %s\n", fmtTime(st.FileSyncTime))
+			fmt.Fprintf(out, "config_sync_time: %s\n", fmtTime(st.ConfigSyncTime))
+			fmt.Fprintf(out, "folder_sync_time: %s\n", fmtTime(st.FolderSyncTime))
+			fmt.Fprintf(out, "note_cache: %d\n", noteCount)
+			fmt.Fprintf(out, "file_cache: %d\n", fileCount)
+			fmt.Fprintf(out, "setting_cache: %d\n", len(st.ConfigHashMap))
+			fmt.Fprintf(out, "folder_cache: %d\n", len(st.FolderSnapshot))
+			fmt.Fprintf(out, "ws_count: %d\n", st.WsCount)
+			fmt.Fprintf(out, "is_init_sync: %v\n", st.IsInitSync)
+			fmt.Fprintf(out, "pending_note_modifies: %d\n", len(st.PendingNoteModifies))
+			fmt.Fprintf(out, "pending_upload_hashes: %d\n", len(st.PendingUploadHashes))
+			fmt.Fprintf(out, "pending_config_modifies: %d\n", len(st.PendingConfigModifies))
+			fmt.Fprintf(out, "upload_checkpoints: %d\n", len(st.UploadCheckpoints))
+			return nil
 		},
 	}
+	cmd.Flags().StringVar(&cfgPath, "config", "", "path to config file (default: ~/.config/go-fast-note-sync/config.yaml)")
+	return cmd
 }
 
+const defaultSyncTimeout = 60 * time.Second
+
 func newSyncCmd() *cobra.Command {
-	return &cobra.Command{
+	var cfgPath string
+	var timeoutFlag time.Duration
+	cmd := &cobra.Command{
 		Use:   "sync",
-		Short: "Trigger a manual sync",
+		Short: "Trigger a one-shot sync and exit",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return fmt.Errorf("not implemented")
+			if cfgPath == "" {
+				cfgPath = config.DefaultPath()
+			}
+			cfg, err := config.Load(cfgPath)
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			statePath := cfg.StateFile
+			if statePath == "" {
+				statePath = state.DefaultPath()
+			}
+			st, err := state.Load(statePath)
+			if err != nil {
+				return fmt.Errorf("load state: %w", err)
+			}
+			cfg.ManualSyncEnabled = false
+			svc := newSyncDaemon(cfg, st, statePath, cliVersion)
+			svc.Connect()
+			ctx, cancel := context.WithTimeout(cmd.Context(), timeoutFlag)
+			defer cancel()
+			select {
+			case <-svc.SyncComplete():
+				fmt.Fprintln(cmd.OutOrStdout(), "Sync complete.")
+				return nil
+			case <-ctx.Done():
+				return fmt.Errorf("sync timed out after %v", timeoutFlag)
+			}
 		},
 	}
+	cmd.Flags().StringVar(&cfgPath, "config", "", "path to config file (default: ~/.config/go-fast-note-sync/config.yaml)")
+	cmd.Flags().DurationVar(&timeoutFlag, "timeout", defaultSyncTimeout, "maximum time to wait for sync completion")
+	return cmd
 }
 
 func newInitConfigCmd() *cobra.Command {

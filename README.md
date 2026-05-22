@@ -66,6 +66,22 @@ go-fast-note-sync start
 go-fast-note-sync start --config /path/to/config.yaml
 ```
 
+**Check sync status (offline)**
+
+```bash
+go-fast-note-sync status
+# prints vault, api, sync switches, last sync times, cache counts, and pending counts
+```
+
+**Trigger a one-shot sync and exit**
+
+```bash
+go-fast-note-sync sync
+# connects, waits for the startup sync round to complete, then exits 0
+# use --timeout to override the default 60s wait:
+go-fast-note-sync sync --timeout 120s
+```
+
 ## Configuration Reference
 
 | Key | Default | Description |
@@ -159,11 +175,6 @@ The daemon implements the WebSocket sync protocol used by the `obsidian-fast-not
 - Binary frames: 2-byte prefix (`00`) + 36-byte session ID + 4-byte chunk index + data
 
 Sync modules: **NoteSync**, **FileSync**, **SettingSync**, **FolderSync** — each with a `*SyncEnd` completion signal.
-
-## Known Limitations
-
-- `status` and manual `sync` commands are not yet implemented
-- `SendFolderModify` updates folder snapshot in memory only; a crash before next state save can lose the delta
 
 ## License
 

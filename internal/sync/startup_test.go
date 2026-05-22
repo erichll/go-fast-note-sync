@@ -1295,3 +1295,52 @@ func TestSaveState_CreatesParentDir(t *testing.T) {
 		t.Errorf("WsCount = %d, want 7", loaded.WsCount)
 	}
 }
+
+// ---- SyncComplete tests ----
+
+func TestSyncComplete_ClosedAfterOnSyncComplete(t *testing.T) {
+	svc := newTestService(nil, nil, "")
+
+	select {
+	case <-svc.SyncComplete():
+		t.Fatal("SyncComplete channel should not be closed before onSyncComplete")
+	default:
+	}
+
+	svc.onSyncComplete(false)
+
+	select {
+	case <-svc.SyncComplete():
+	case <-time.After(time.Second):
+		t.Fatal("SyncComplete channel was not closed after onSyncComplete")
+	}
+}
+
+func TestSyncComplete_IdempotentMultipleCalls(t *testing.T) {
+	svc := newTestService(nil, nil, "")
+
+	// Calling onSyncComplete twice must not panic (syncDoneOnce guards close).
+	svc.onSyncComplete(true)
+	svc.onSyncComplete(true)
+
+	select {
+	case <-svc.SyncComplete():
+	default:
+		t.Fatal("SyncComplete channel should be closed after first onSyncComplete")
+	}
+}
+
+func TestSyncComplete_NewSyncServiceInitialized(t *testing.T) {
+	cfg := config.Default()
+	cfg.API = "http://example.com"
+	svc := NewSyncService(cfg, state.New(), "/tmp/test.json", "1.0.0")
+
+	if svc.SyncComplete() == nil {
+		t.Fatal("SyncComplete() channel should not be nil after NewSyncService")
+	}
+	select {
+	case <-svc.SyncComplete():
+		t.Fatal("SyncComplete channel should not be closed on fresh service")
+	default:
+	}
+}

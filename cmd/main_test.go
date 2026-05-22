@@ -106,11 +106,19 @@ func TestStartHappyPath(t *testing.T) {
 }
 
 type fakeDaemon struct {
-	connected bool
+	connected  bool
+	syncDoneCh chan struct{}
 }
 
 func (f *fakeDaemon) Connect() {
 	f.connected = true
+}
+
+func (f *fakeDaemon) SyncComplete() <-chan struct{} {
+	if f.syncDoneCh == nil {
+		f.syncDoneCh = make(chan struct{})
+	}
+	return f.syncDoneCh
 }
 
 func (f *fakeDaemon) ShouldWatchDir(string) bool {
@@ -216,17 +224,188 @@ func TestStartWatcherGatedBySyncEnabledAndVaultPath(t *testing.T) {
 	}
 }
 
-func TestStatusNotImplemented(t *testing.T) {
-	err := execCmd("status")
-	if err == nil || err.Error() != "not implemented" {
-		t.Errorf("status: expected 'not implemented', got %v", err)
+func TestStatusCmd(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, dir string) (cfgPath string)
+		wantErr    string
+		wantOutput []string
+	}{
+		{
+			name: "missing config returns load config error",
+			setup: func(t *testing.T, dir string) string {
+				return filepath.Join(dir, "does-not-exist.yaml")
+			},
+			wantErr: "load config",
+		},
+		{
+			name: "missing state file prints never for timestamps",
+			setup: func(t *testing.T, dir string) string {
+				cfgPath := filepath.Join(dir, "config.yaml")
+				if err := execCmd("init-config", "--config", cfgPath); err != nil {
+					t.Fatalf("init-config: %v", err)
+				}
+				return cfgPath
+			},
+			wantOutput: []string{
+				"vault:",
+				"api:",
+				"note_sync_time: never",
+				"file_sync_time: never",
+				"config_sync_time: never",
+				"folder_sync_time: never",
+				"ws_count: 0",
+				"is_init_sync: false",
+			},
+		},
+		{
+			name: "populated state shows counts and timestamps",
+			setup: func(t *testing.T, dir string) string {
+				cfgPath := filepath.Join(dir, "config.yaml")
+				statePath := filepath.Join(dir, "state.json")
+				if err := execCmd("init-config", "--config", cfgPath); err != nil {
+					t.Fatalf("init-config: %v", err)
+				}
+				data, _ := os.ReadFile(cfgPath)
+				updated := strings.Replace(string(data), "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
+				if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
+					t.Fatalf("rewrite config: %v", err)
+				}
+				st := &state.State{
+					FileHashMap:           map[string]state.FileHashEntry{"a.md": {}, "b.png": {}},
+					ConfigHashMap:         map[string]state.FileHashEntry{".obsidian/app.json": {}},
+					FolderSnapshot:        map[string]int64{"notes": 1000},
+					PendingNoteModifies:   map[string]string{"c.md": "hash"},
+					PendingUploadHashes:   make(map[string]string),
+					PendingConfigModifies: make(map[string]string),
+					UploadCheckpoints:     make(map[string]state.UploadCheckpoint),
+					NoteSyncTime:          1748908800000,
+					WsCount:               3,
+					IsInitSync:            true,
+				}
+				if err := state.Save(statePath, st); err != nil {
+					t.Fatalf("save state: %v", err)
+				}
+				return cfgPath
+			},
+			wantOutput: []string{
+				"note_cache: 1",
+				"file_cache: 1",
+				"setting_cache: 1",
+				"folder_cache: 1",
+				"ws_count: 3",
+				"is_init_sync: true",
+				"pending_note_modifies: 1",
+				"note_sync_time: 2025-06-03T00:00:00Z",
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfgPath := tc.setup(t, dir)
+
+			cmd := newRootCmd()
+			cmd.SetArgs([]string{"status", "--config", cfgPath})
+			cmd.SilenceErrors = true
+			cmd.SilenceUsage = true
+			var out bytes.Buffer
+			cmd.SetOut(&out)
+			err := cmd.Execute()
+
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Errorf("expected error containing %q, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			for _, want := range tc.wantOutput {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output missing %q\nfull output:\n%s", want, out.String())
+				}
+			}
+		})
 	}
 }
 
-func TestSyncNotImplemented(t *testing.T) {
-	err := execCmd("sync")
-	if err == nil || err.Error() != "not implemented" {
-		t.Errorf("sync: expected 'not implemented', got %v", err)
+func TestSyncCmd_LoadConfigError(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "does-not-exist.yaml")
+	err := execCmd("sync", "--config", missing)
+	if err == nil || !strings.Contains(err.Error(), "load config") {
+		t.Errorf("expected 'load config' error, got %v", err)
+	}
+}
+
+func TestSyncCmd_Timeout(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	statePath := filepath.Join(dir, "state.json")
+	if err := execCmd("init-config", "--config", cfgPath); err != nil {
+		t.Fatalf("init-config: %v", err)
+	}
+	data, _ := os.ReadFile(cfgPath)
+	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
+	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+
+	origSync := newSyncDaemon
+	defer func() { newSyncDaemon = origSync }()
+	fd := &fakeDaemon{}
+	newSyncDaemon = func(_ *config.Config, _ *state.State, _, _ string) syncDaemon {
+		return fd
+	}
+
+	err := execCmd("sync", "--config", cfgPath, "--timeout", "20ms")
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error should mention 'timed out', got: %v", err)
+	}
+}
+
+func TestSyncCmd_Success(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	statePath := filepath.Join(dir, "state.json")
+	if err := execCmd("init-config", "--config", cfgPath); err != nil {
+		t.Fatalf("init-config: %v", err)
+	}
+	data, _ := os.ReadFile(cfgPath)
+	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
+	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+
+	origSync := newSyncDaemon
+	defer func() { newSyncDaemon = origSync }()
+	done := make(chan struct{})
+	close(done)
+	fd := &fakeDaemon{syncDoneCh: done}
+	newSyncDaemon = func(_ *config.Config, _ *state.State, _, _ string) syncDaemon {
+		return fd
+	}
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"sync", "--config", cfgPath})
+	cmd.SilenceErrors = true
+	cmd.SilenceUsage = true
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("sync success path: %v", err)
+	}
+	if !strings.Contains(out.String(), "Sync complete.") {
+		t.Errorf("output should contain 'Sync complete.', got: %s", out.String())
+	}
+	if !fd.connected {
+		t.Error("Connect() should have been called")
 	}
 }
 

@@ -329,6 +329,7 @@ func newTestService(cfg *config.Config, st *state.State, statePath string) *Sync
 		scannedConfigHashes:      make(map[string]state.FileHashEntry),
 		concurrency:              NewConcurrencyManager(cfg),
 		pathLocks:                make(map[string]chan struct{}),
+		syncDoneCh:               make(chan struct{}),
 		// Fast timeouts so background goroutines terminate quickly in tests.
 		syncTimeout:     50 * time.Millisecond,
 		folderWaitPoll:  5 * time.Millisecond,

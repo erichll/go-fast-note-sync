@@ -429,6 +429,7 @@ func (s *SyncService) onSyncComplete(wasInitSync bool) {
 			log.Printf("[sync] persist IsInitSync: %v", err)
 		}
 	}
+	s.syncDoneOnce.Do(func() { close(s.syncDoneCh) })
 }
 
 // --- Vault scanning ---

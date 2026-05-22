@@ -166,6 +166,9 @@ type SyncService struct {
 	pathLocks   map[string]chan struct{}
 
 	pingWG stdsync.WaitGroup
+
+	syncDoneCh   chan struct{}
+	syncDoneOnce stdsync.Once
 }
 
 // NewSyncService creates a SyncService with production defaults.
@@ -203,12 +206,18 @@ func NewSyncService(cfg *config.Config, st *state.State, statePath, version stri
 		scannedConfigHashes:      make(map[string]state.FileHashEntry),
 		concurrency:              NewConcurrencyManager(cfg),
 		pathLocks:                make(map[string]chan struct{}),
+		syncDoneCh:               make(chan struct{}),
 	}
 	if cfg.SyncTimeoutSeconds > 0 {
 		s.syncTimeout = time.Duration(cfg.SyncTimeoutSeconds) * time.Second
 	}
 	s.binaryHandlers[binaryPrefixFileSync] = s.handleFileBinaryChunk
 	return s
+}
+
+// SyncComplete returns a channel that is closed once the first sync round completes.
+func (s *SyncService) SyncComplete() <-chan struct{} {
+	return s.syncDoneCh
 }
 
 // buildWSURL constructs the WebSocket connection URL.
