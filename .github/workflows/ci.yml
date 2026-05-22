@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: fmt
+        run: |
+          UNFORMATTED=$(find . -name "*.go" -not -path "./.git/*" | xargs gofmt -l)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Unformatted files:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: lint
+        uses: golangci/golangci-lint-action@v6
+
+      - name: test
+        run: go test -race ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: coverage gate
+        run: |
+          FUNC=$(go tool cover -func=coverage.out)
+          TOTAL=$(echo "$FUNC" | awk '/^total:/ {gsub(/%/,"",$NF); print $NF}')
+          SYNC_DATA=$(echo "$FUNC" | grep 'internal/sync/' || true)
+          if [ -z "$SYNC_DATA" ]; then echo "ERROR: no data for internal/sync/" >&2; exit 1; fi
+          SYNC=$(echo "$SYNC_DATA" | awk '{gsub(/%/,"",$NF); sum+=$NF; n++} END {printf "%.1f", sum/n}')
+          echo "Total coverage:         ${TOTAL}%"
+          echo "internal/sync coverage: ${SYNC}%"
+          FAIL=0
+          awk "BEGIN { exit !($TOTAL < 80) }" && { echo "FAIL: total ${TOTAL}% < 80%" >&2; FAIL=1; }
+          awk "BEGIN { exit !($SYNC  < 80) }" && { echo "FAIL: internal/sync ${SYNC}% < 80%" >&2; FAIL=1; }
+          exit $FAIL
+
+      - name: build
+        run: go build ./...

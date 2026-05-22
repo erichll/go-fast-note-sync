@@ -163,7 +163,6 @@ Sync modules: **NoteSync**, **FileSync**, **SettingSync**, **FolderSync** — ea
 ## Known Limitations
 
 - `status` and manual `sync` commands are not yet implemented
-- No CI pipeline configured
 - `SendFolderModify` updates folder snapshot in memory only; a crash before next state save can lose the delta
 
 ## License
