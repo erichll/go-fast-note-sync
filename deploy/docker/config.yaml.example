@@ -1,0 +1,11 @@
+# Required
+api: https://your-server.example.com
+api_token: your-token-here
+vault: YourVaultName   # vault name on the server
+vault_path: /vault     # matches the container volume mount; do not change
+
+# Optional tuning (shown with defaults)
+# sync_enabled: true
+# config_sync_enabled: true
+# offline_delete_sync_enabled: false
+# sync_timeout_seconds: 0  # 0 = daemon default 60s

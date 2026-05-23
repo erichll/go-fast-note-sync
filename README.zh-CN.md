@@ -153,6 +153,10 @@ systemctl --user status go-fast-note-sync
 journalctl --user -u go-fast-note-sync -f
 ```
 
+## Docker 部署
+
+`deploy/docker/` 目录提供了多阶段 Dockerfile 和 Compose 文件。完整的操作指南（含镜像构建、配置、卷布局和 inotify 调优）详见 **[deploy/docker/README.md](deploy/docker/README.md)**。
+
 ## 开发
 
 ```bash
@@ -183,6 +187,7 @@ internal/
   sync/           WebSocket 客户端、启动同步、协议处理器
   watcher/        fsnotify 文件监听集成
 deploy/systemd/   systemd 用户服务单元
+deploy/docker/    Docker 多阶段构建与 Compose 部署
 docs/             设计文档与协议参考
 test/smoke/       集成冒烟测试套件
 ```

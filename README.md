@@ -153,6 +153,10 @@ systemctl --user status go-fast-note-sync
 journalctl --user -u go-fast-note-sync -f
 ```
 
+## Docker Deployment
+
+A multi-stage Dockerfile and Compose file are provided in `deploy/docker/`. See **[deploy/docker/README.md](deploy/docker/README.md)** for the full operator quickstart covering build, configuration, volume layout, and inotify tuning.
+
 ## Development
 
 ```bash
@@ -183,6 +187,7 @@ internal/
   sync/           WebSocket client, startup sync, protocol handlers
   watcher/        fsnotify watcher integration
 deploy/systemd/   systemd user-service unit
+deploy/docker/    Docker multi-stage build and Compose deployment
 docs/             Design documents and protocol reference
 test/smoke/       Integration smoke test harness
 ```

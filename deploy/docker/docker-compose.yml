@@ -1,0 +1,11 @@
+services:
+  go-fast-note-sync:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile
+    image: go-fast-note-sync:latest
+    volumes:
+      - ${VAULT_PATH:?set VAULT_PATH to your vault directory}:/vault
+      - ${CONFIG_DIR:?set CONFIG_DIR to your config directory}:/home/appuser/.config/go-fast-note-sync
+      - ${STATE_DIR:?set STATE_DIR to your state directory}:/home/appuser/.local/share/go-fast-note-sync
+    restart: unless-stopped
