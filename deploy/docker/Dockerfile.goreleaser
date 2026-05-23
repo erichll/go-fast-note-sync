@@ -1,0 +1,13 @@
+FROM alpine:3.21
+ARG TARGETPLATFORM
+RUN apk add --no-cache ca-certificates
+RUN addgroup -S appgroup && \
+    adduser -S -D -h /home/appuser -G appgroup appuser && \
+    mkdir -p /home/appuser && \
+    chown appuser:appgroup /home/appuser
+COPY --chown=appuser:appgroup ${TARGETPLATFORM}/go-fast-note-sync /usr/local/bin/go-fast-note-sync
+ENV HOME=/home/appuser
+USER appuser
+WORKDIR /home/appuser
+ENTRYPOINT ["go-fast-note-sync"]
+CMD ["start"]

@@ -1,0 +1,145 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: fmt
+        run: |
+          UNFORMATTED=$(find . -name "*.go" -not -path "./.git/*" | xargs gofmt -l)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "Unformatted files:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.12.2
+
+      - name: test
+        run: go test -race ./... -coverprofile=coverage.out -covermode=atomic
+
+      - name: coverage gate
+        run: |
+          FUNC=$(go tool cover -func=coverage.out)
+          TOTAL=$(echo "$FUNC" | awk '/^total:/ {gsub(/%/,"",$NF); print $NF}')
+          SYNC=$(awk '
+            /^mode:/ { next }
+            $1 ~ /\/internal\/sync\// {
+              total += $2
+              if ($3 > 0) covered += $2
+            }
+            END {
+              if (total == 0) {
+                print "ERROR: no statement data for internal/sync/" > "/dev/stderr"
+                exit 1
+              }
+              printf "%.1f", covered * 100 / total
+            }
+          ' coverage.out)
+          echo "Total statement coverage:         ${TOTAL}%"
+          echo "internal/sync statement coverage: ${SYNC}%"
+          FAIL=0
+          awk "BEGIN { exit !($TOTAL < 80) }" && { echo "FAIL: total ${TOTAL}% < 80%" >&2; FAIL=1; }
+          awk "BEGIN { exit !($SYNC  < 80) }" && { echo "FAIL: internal/sync ${SYNC}% < 80%" >&2; FAIL=1; }
+          exit $FAIL
+
+      - name: build
+        run: go build ./...
+
+      - name: goreleaser check
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
+
+      - name: goreleaser snapshot build
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: build --snapshot --clean
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: goreleaser snapshot release
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --snapshot --clean
+
+  release:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  verify-public-image:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: verify anonymous GHCR pull
+        run: |
+          docker logout ghcr.io || true
+          IMAGE="ghcr.io/erichll/go-fast-note-sync"
+          for TAG in "${GITHUB_REF_NAME}" latest; do
+            for ATTEMPT in 1 2 3 4 5 6; do
+              if docker pull "${IMAGE}:${TAG}"; then
+                break
+              fi
+              if [ "$ATTEMPT" = "6" ]; then
+                echo "ERROR: anonymous pull failed for ${IMAGE}:${TAG}" >&2
+                echo "Ensure the GHCR package visibility is Public, then re-run the release workflow." >&2
+                exit 1
+              fi
+              sleep 10
+            done
+          done
+          docker run --rm "${IMAGE}:${GITHUB_REF_NAME}" --help

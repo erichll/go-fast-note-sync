@@ -12,7 +12,7 @@ jobs:
     timeout-minutes: 15
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: actions/setup-go@v5
         with:
@@ -40,11 +40,22 @@ jobs:
         run: |
           FUNC=$(go tool cover -func=coverage.out)
           TOTAL=$(echo "$FUNC" | awk '/^total:/ {gsub(/%/,"",$NF); print $NF}')
-          SYNC_DATA=$(echo "$FUNC" | grep 'internal/sync/' || true)
-          if [ -z "$SYNC_DATA" ]; then echo "ERROR: no data for internal/sync/" >&2; exit 1; fi
-          SYNC=$(echo "$SYNC_DATA" | awk '{gsub(/%/,"",$NF); sum+=$NF; n++} END {printf "%.1f", sum/n}')
-          echo "Total coverage:         ${TOTAL}%"
-          echo "internal/sync coverage: ${SYNC}%"
+          SYNC=$(awk '
+            /^mode:/ { next }
+            $1 ~ /\/internal\/sync\// {
+              total += $2
+              if ($3 > 0) covered += $2
+            }
+            END {
+              if (total == 0) {
+                print "ERROR: no statement data for internal/sync/" > "/dev/stderr"
+                exit 1
+              }
+              printf "%.1f", covered * 100 / total
+            }
+          ' coverage.out)
+          echo "Total statement coverage:         ${TOTAL}%"
+          echo "internal/sync statement coverage: ${SYNC}%"
           FAIL=0
           awk "BEGIN { exit !($TOTAL < 80) }" && { echo "FAIL: total ${TOTAL}% < 80%" >&2; FAIL=1; }
           awk "BEGIN { exit !($SYNC  < 80) }" && { echo "FAIL: internal/sync ${SYNC}% < 80%" >&2; FAIL=1; }

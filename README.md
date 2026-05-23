@@ -23,6 +23,38 @@ A Linux/headless Go CLI daemon that syncs a local [Obsidian](https://obsidian.md
 
 ## Installation
 
+### From GitHub Release (recommended)
+
+Download the pre-built binary for your platform from the [GitHub Releases page](https://github.com/erichll/go-fast-note-sync/releases). Each release includes platform archives and a `checksums.txt` for verification.
+
+**Linux x86-64 example:**
+
+```bash
+# Replace v0.x.y with the release tag
+curl -LO https://github.com/erichll/go-fast-note-sync/releases/download/v0.x.y/go-fast-note-sync_linux_amd64.tar.gz
+tar -xzf go-fast-note-sync_linux_amd64.tar.gz
+install -m 755 go-fast-note-sync ~/.local/bin/go-fast-note-sync
+```
+
+Verify checksum:
+
+```bash
+sha256sum -c checksums.txt --ignore-missing
+```
+
+> **Supported platforms for binary releases:** linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64.
+> The primary supported runtime target is **Linux/headless**. darwin and windows artifacts are provided as release binaries only and are not guaranteed to work in production.
+
+### From Docker (GHCR)
+
+```bash
+docker pull ghcr.io/erichll/go-fast-note-sync:latest
+```
+
+The GHCR package is public — no `docker login` required. Replace `latest` with a specific tag (e.g. `v0.1.0`) for pinned deployments.
+
+See **[deploy/docker/README.md](deploy/docker/README.md)** for the full operator quickstart.
+
 ### From source
 
 ```bash

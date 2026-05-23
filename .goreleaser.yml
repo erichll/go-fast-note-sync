@@ -1,0 +1,66 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: go-fast-note-sync
+
+builds:
+  - id: go-fast-note-sync
+    main: ./cmd/
+    binary: go-fast-note-sync
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    include:
+      - "^feat:"
+      - "^fix:"
+    exclude:
+      - "^docs:"
+      - "^chore:"
+      - "^ci:"
+
+dockers_v2:
+  - id: go-fast-note-sync
+    ids:
+      - go-fast-note-sync
+    dockerfile: deploy/docker/Dockerfile.goreleaser
+    images:
+      - "ghcr.io/erichll/go-fast-note-sync"
+    tags:
+      - "{{ .Tag }}"
+      - latest
+    platforms:
+      - linux/amd64
+    sbom: false
+    labels:
+      "org.opencontainers.image.created": "{{ .Date }}"
+      "org.opencontainers.image.name": "{{ .ProjectName }}"
+      "org.opencontainers.image.revision": "{{ .FullCommit }}"
+      "org.opencontainers.image.source": "{{ .GitURL }}"
+      "org.opencontainers.image.version": "{{ .Version }}"
+    flags:
+      - "--provenance=false"

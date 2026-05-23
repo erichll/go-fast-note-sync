@@ -8,7 +8,23 @@ Run `go-fast-note-sync` as a container on a Linux host.
 - **Linux host** — inotify is required for live file watching; Docker Desktop on macOS/Windows uses a different FS event bridge and is not the primary target
 - A reachable `fast-note-sync-service` instance with a valid API token
 
-## 2. Build
+## 2. Get the Image
+
+### Option A — Pull from GHCR (recommended)
+
+The published image is available from GitHub Container Registry and is public — no login required:
+
+```bash
+docker pull ghcr.io/erichll/go-fast-note-sync:latest
+# or a specific release tag:
+docker pull ghcr.io/erichll/go-fast-note-sync:v0.1.0
+```
+
+Use `ghcr.io/erichll/go-fast-note-sync:<tag>` wherever the image is referenced in Compose or Kubernetes configs.
+
+> **Note:** The GHCR package must have **Public** visibility for anonymous pulls to work. If you see an authentication error, verify the package is public in the GitHub package settings, then retry.
+
+### Option B — Build locally
 
 From the **project root**:
 

@@ -23,6 +23,38 @@
 
 ## 安装
 
+### 从 GitHub Release 下载（推荐）
+
+在 [GitHub Releases 页面](https://github.com/erichll/go-fast-note-sync/releases) 下载对应平台的预编译二进制。每个 Release 包含各平台归档包和用于校验的 `checksums.txt`。
+
+**Linux x86-64 示例：**
+
+```bash
+# 将 v0.x.y 替换为实际版本号
+curl -LO https://github.com/erichll/go-fast-note-sync/releases/download/v0.x.y/go-fast-note-sync_linux_amd64.tar.gz
+tar -xzf go-fast-note-sync_linux_amd64.tar.gz
+install -m 755 go-fast-note-sync ~/.local/bin/go-fast-note-sync
+```
+
+校验哈希：
+
+```bash
+sha256sum -c checksums.txt --ignore-missing
+```
+
+> **二进制发布支持平台：** linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64。
+> 项目主要支持的运行目标为 **Linux/headless**。darwin 和 windows 平台归档仅作为发布产物提供，不声明已做真实运行支持。
+
+### 通过 Docker（GHCR）
+
+```bash
+docker pull ghcr.io/erichll/go-fast-note-sync:latest
+```
+
+GHCR 镜像已设为公开，无需 `docker login`。将 `latest` 替换为具体版本标签（如 `v0.1.0`）可固定版本。
+
+完整操作指南见 **[deploy/docker/README.md](deploy/docker/README.md)**。
+
 ### 从源码编译
 
 ```bash
