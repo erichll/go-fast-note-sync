@@ -348,7 +348,7 @@ func (s *SyncService) folderSyncDone() bool {
 func (s *SyncService) runCheckSyncCompletion(wasInitSync bool) {
 	timeout := s.syncTimeout
 	if timeout == 0 {
-		timeout = 60 * time.Second
+		timeout = 30 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -369,6 +369,9 @@ func (s *SyncService) runCheckSyncCompletion(wasInitSync bool) {
 }
 
 // isSyncComplete returns true when all sync modules have finished.
+// Completion requires *SyncEnd to arrive because SyncEnd handlers commit sync timestamps,
+// clear pending-delete hashes, and update scanned caches. The 30s timeout in
+// runCheckSyncCompletion acts as the safety net when SyncEnd is lost.
 func (s *SyncService) isSyncComplete() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()

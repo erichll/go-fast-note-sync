@@ -255,6 +255,17 @@ func TestIsSyncComplete_NotDoneWhenFlagMissing(t *testing.T) {
 	}
 }
 
+// SyncEnd=true but completed < total → not done.
+func TestIsSyncComplete_SyncEndButTasksRemaining(t *testing.T) {
+	cfg := &config.Config{ConfigSyncEnabled: true}
+	svc := newTestService(cfg, nil, "")
+	allSyncEndTrue(svc)
+	svc.noteSyncTasks = SyncTaskCounter{NeedUpload: 3, Completed: 1} // incomplete
+	if svc.isSyncComplete() {
+		t.Error("should not be complete when SyncEnd=true but completed < total")
+	}
+}
+
 func TestIsSyncComplete_ConfigDisabled(t *testing.T) {
 	cfg := &config.Config{ConfigSyncEnabled: false}
 	svc := newTestService(cfg, nil, "")
