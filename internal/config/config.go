@@ -12,6 +12,10 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+// DefaultClientType is the default client identifier sent to the server via the
+// WebSocket URL `client=` parameter and the ClientInfo `type` field.
+const DefaultClientType = "GoFastNoteSync"
+
 type Config struct {
 	API      string `yaml:"api"       mapstructure:"api"`
 	APIToken string `yaml:"api_token"  mapstructure:"api_token"`
@@ -19,9 +23,8 @@ type Config struct {
 	Vault     string `yaml:"vault"      mapstructure:"vault"`
 	VaultPath string `yaml:"vault_path" mapstructure:"vault_path"`
 
-	// ClientType identifies the client to the server. Default "LinuxCLI";
-	// override to "ObsidianPlugin" when the server has not yet been taught to
-	// recognise non-plugin clients (the only safe value for older deployments).
+	// ClientType identifies the client to the server. Defaults to DefaultClientType
+	// ("GoFastNoteSync"). Override if the server token scope restricts `c:<value>`.
 	ClientType string `yaml:"client_type" mapstructure:"client_type"`
 
 	SyncEnabled       bool `yaml:"sync_enabled"        mapstructure:"sync_enabled"`
@@ -61,7 +64,7 @@ func Default() *Config {
 		APIToken:                  "",
 		Vault:                     "",
 		VaultPath:                 "",
-		ClientType:                "LinuxCLI",
+		ClientType:                DefaultClientType,
 		SyncEnabled:               true,
 		ConfigSyncEnabled:         true,
 		OfflineDeleteSyncEnabled:  false,

@@ -90,7 +90,7 @@ go-fast-note-sync sync --timeout 120s
 | `api_token` | — | Auth token (supports `${ENV_VAR}`) |
 | `vault` | — | Vault name on the server |
 | `vault_path` | — | Absolute local path to the vault |
-| `client_type` | `LinuxCLI` | Client identifier sent to server; use `ObsidianPlugin` for legacy servers |
+| `client_type` | `GoFastNoteSync` | Client identifier sent to server; override when the token scope restricts `c:<value>` |
 | `sync_enabled` | `true` | Enable note/attachment sync |
 | `config_sync_enabled` | `true` | Enable `.obsidian` settings sync |
 | `offline_delete_sync_enabled` | `false` | Push local deletes that happened while offline |
@@ -105,6 +105,28 @@ go-fast-note-sync sync --timeout 120s
 | `state_file` | auto | Override default state file path |
 
 Default state path: `~/.local/share/go-fast-note-sync/state.json`
+
+## Token & Client Type
+
+`client_type` is sent to the server as the `?client=` query parameter in the WebSocket URL and as the `type` field in the `ClientInfo` handshake message. The default value is `GoFastNoteSync`.
+
+### Creating a token in the management console
+
+When creating or editing a token, the console shows a **Client restriction** field (客户端限制). Whatever you enter there must exactly match the `client_type` in your config file, or the WebSocket handshake will be rejected with `AuthorizationFaild` (error code 315).
+
+| Management console "Client restriction" | Config `client_type` | Result |
+|-----------------------------------------|----------------------|--------|
+| `GoFastNoteSync` | `GoFastNoteSync` (default) | ✅ connects |
+| *(left empty / no restriction)* | any value | ✅ connects |
+| `GoFastNoteSync` | `MyCustomClient` | ❌ rejected |
+
+**Recommended:** set the Client restriction to `GoFastNoteSync` when issuing a token for this daemon — no config change needed since that is the default.
+
+If you need a custom identifier, set both sides to the same value:
+
+```yaml
+client_type: MyCustomClient
+```
 
 ## systemd User Service
 

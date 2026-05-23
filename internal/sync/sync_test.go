@@ -409,7 +409,7 @@ func TestParseTextMessage_VaultField(t *testing.T) {
 // ---- buildWSURL tests ----
 
 func TestBuildWSURL_HTTP(t *testing.T) {
-	u, err := buildWSURL("http://example.com", "LinuxCLI", "1.0.0", 42)
+	u, err := buildWSURL("http://example.com", config.DefaultClientType, "1.0.0", 42)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -419,8 +419,8 @@ func TestBuildWSURL_HTTP(t *testing.T) {
 	if !strings.Contains(u, "count=42") {
 		t.Errorf("URL should contain count=42, got %q", u)
 	}
-	if !strings.Contains(u, "client=LinuxCLI") {
-		t.Errorf("URL should contain client=LinuxCLI, got %q", u)
+	if !strings.Contains(u, "client=GoFastNoteSync") {
+		t.Errorf("URL should contain client=GoFastNoteSync, got %q", u)
 	}
 	if !strings.Contains(u, "clientVersion=1.0.0") {
 		t.Errorf("URL should contain clientVersion=1.0.0, got %q", u)
@@ -428,7 +428,7 @@ func TestBuildWSURL_HTTP(t *testing.T) {
 }
 
 func TestBuildWSURL_HTTPS(t *testing.T) {
-	u, err := buildWSURL("https://example.com", "LinuxCLI", "2.0.0", 0)
+	u, err := buildWSURL("https://example.com", config.DefaultClientType, "2.0.0", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestBuildWSURL_HTTPS(t *testing.T) {
 }
 
 func TestBuildWSURL_TrailingSlash(t *testing.T) {
-	u, err := buildWSURL("http://example.com/", "LinuxCLI", "1.0.0", 0)
+	u, err := buildWSURL("http://example.com/", config.DefaultClientType, "1.0.0", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -449,32 +449,41 @@ func TestBuildWSURL_TrailingSlash(t *testing.T) {
 }
 
 func TestBuildWSURL_InvalidScheme(t *testing.T) {
-	_, err := buildWSURL("ftp://example.com", "LinuxCLI", "1.0.0", 0)
+	_, err := buildWSURL("ftp://example.com", config.DefaultClientType, "1.0.0", 0)
 	if err == nil {
 		t.Error("expected error for invalid scheme")
 	}
 }
 
 func TestBuildWSURL_OverrideClientType(t *testing.T) {
-	u, err := buildWSURL("http://example.com", "ObsidianPlugin", "1.0.0", 1)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	cases := []struct {
+		clientType string
+	}{
+		{"ObsidianPlugin"},
+		{"CustomClient"},
 	}
-	if !strings.Contains(u, "client=ObsidianPlugin") {
-		t.Errorf("URL should contain client=ObsidianPlugin, got %q", u)
-	}
-	if strings.Contains(u, "client=LinuxCLI") {
-		t.Errorf("URL should not still contain LinuxCLI, got %q", u)
+	for _, tc := range cases {
+		u, err := buildWSURL("http://example.com", tc.clientType, "1.0.0", 1)
+		if err != nil {
+			t.Fatalf("clientType=%q: unexpected error: %v", tc.clientType, err)
+		}
+		want := "client=" + tc.clientType
+		if !strings.Contains(u, want) {
+			t.Errorf("clientType=%q: URL should contain %q, got %q", tc.clientType, want, u)
+		}
+		if strings.Contains(u, "client="+config.DefaultClientType) {
+			t.Errorf("clientType=%q: URL should not fall back to DefaultClientType, got %q", tc.clientType, u)
+		}
 	}
 }
 
-func TestBuildWSURL_EmptyClientTypeFallsBackToLinuxCLI(t *testing.T) {
+func TestBuildWSURL_EmptyClientTypeFallsBackToGoFastNoteSync(t *testing.T) {
 	u, err := buildWSURL("http://example.com", "", "1.0.0", 1)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(u, "client=LinuxCLI") {
-		t.Errorf("empty client type should fall back to LinuxCLI, got %q", u)
+	if !strings.Contains(u, "client=GoFastNoteSync") {
+		t.Errorf("empty client type should fall back to GoFastNoteSync, got %q", u)
 	}
 }
 
@@ -1138,7 +1147,7 @@ func TestSendClientInfo_Payload(t *testing.T) {
 	}
 	checks := map[string]interface{}{
 		"version":             "1.2.3",
-		"type":                "LinuxCLI",
+		"type":                config.DefaultClientType,
 		"isLinux":             true,
 		"isDesktop":           false,
 		"isMobile":            false,

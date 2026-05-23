@@ -5,6 +5,8 @@ import (
 	"log"
 	"os"
 	"strings"
+
+	"github.com/erichll/go-fast-note-sync/internal/config"
 )
 
 var authErrorFallbackMessages = map[int]string{
@@ -93,7 +95,7 @@ func sendClientInfo(s *SyncService) {
 	}
 	clientType := s.cfg.ClientType
 	if clientType == "" {
-		clientType = "LinuxCLI"
+		clientType = config.DefaultClientType
 	}
 	if err := s.Send("ClientInfo", map[string]interface{}{
 		"name":                hostname,

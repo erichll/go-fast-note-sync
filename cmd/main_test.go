@@ -424,6 +424,13 @@ func TestInitConfigWritesFile(t *testing.T) {
 	if !strings.Contains(out.String(), path) {
 		t.Errorf("expected output to mention path %q, got: %s", path, out.String())
 	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	if !strings.Contains(string(raw), "client_type: "+config.DefaultClientType) {
+		t.Errorf("generated config should contain client_type: %s, got:\n%s", config.DefaultClientType, string(raw))
+	}
 }
 
 func TestInitConfigExistingFile(t *testing.T) {

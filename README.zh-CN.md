@@ -90,7 +90,7 @@ go-fast-note-sync sync --timeout 120s
 | `api_token` | — | 认证 Token（支持 `${ENV_VAR}`） |
 | `vault` | — | 服务端 vault 名称 |
 | `vault_path` | — | 本地 vault 的绝对路径 |
-| `client_type` | `LinuxCLI` | 上报给服务端的客户端标识；旧版服务端可改为 `ObsidianPlugin` |
+| `client_type` | `GoFastNoteSync` | 上报给服务端的客户端标识；如 token scope 限制了 `c:<value>` 需与之一致 |
 | `sync_enabled` | `true` | 是否启用笔记/附件同步 |
 | `config_sync_enabled` | `true` | 是否启用 `.obsidian` 设置同步 |
 | `offline_delete_sync_enabled` | `false` | 是否推送离线期间的本地删除操作 |
@@ -105,6 +105,28 @@ go-fast-note-sync sync --timeout 120s
 | `state_file` | 自动 | 覆盖默认状态文件路径 |
 
 默认状态文件路径：`~/.local/share/go-fast-note-sync/state.json`
+
+## Token 与客户端标识
+
+`client_type` 在建立 WebSocket 连接时以 `?client=` 查询参数发送给服务端，同时作为 `ClientInfo` 握手消息的 `type` 字段。默认值为 `GoFastNoteSync`。
+
+### 在管理控制台创建令牌
+
+创建或编辑令牌时，控制台提供**客户端限制**输入框。该字段填写的值必须与配置文件中的 `client_type` 完全一致，否则 WebSocket 握手会被服务端以 `AuthorizationFaild`（错误码 315）拒绝。
+
+| 控制台"客户端限制"填写值 | 配置文件 `client_type` | 结果 |
+|--------------------------|------------------------|------|
+| `GoFastNoteSync` | `GoFastNoteSync`（默认值） | ✅ 连接成功 |
+| *（留空 / 不限制）* | 任意值 | ✅ 连接成功 |
+| `GoFastNoteSync` | `MyCustomClient` | ❌ 握手被拒绝 |
+
+**推荐做法：** 为本守护进程签发令牌时，客户端限制填写 `GoFastNoteSync`，无需修改配置文件，开箱即用。
+
+若需要自定义客户端标识，两侧保持一致即可：
+
+```yaml
+client_type: MyCustomClient
+```
 
 ## systemd 用户服务
 

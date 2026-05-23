@@ -222,8 +222,8 @@ func (s *SyncService) SyncComplete() <-chan struct{} {
 
 // buildWSURL constructs the WebSocket connection URL.
 // count is the value of State.WsCount used as the query parameter.
-// clientType is used for the `client` query parameter; defaults to "LinuxCLI"
-// when empty.
+// clientType is used for the `client` query parameter; falls back to
+// config.DefaultClientType when empty.
 func buildWSURL(apiURL, clientType, version string, count int) (string, error) {
 	var wsBase string
 	switch {
@@ -237,7 +237,7 @@ func buildWSURL(apiURL, clientType, version string, count int) (string, error) {
 	wsBase = strings.TrimRight(wsBase, "/")
 
 	if clientType == "" {
-		clientType = "LinuxCLI"
+		clientType = config.DefaultClientType
 	}
 
 	hostname, err := os.Hostname()

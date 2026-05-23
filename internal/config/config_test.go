@@ -9,6 +9,12 @@ import (
 
 func TestDefault(t *testing.T) {
 	d := Default()
+	if DefaultClientType != "GoFastNoteSync" {
+		t.Errorf("DefaultClientType = %q, want %q", DefaultClientType, "GoFastNoteSync")
+	}
+	if d.ClientType != DefaultClientType {
+		t.Errorf("Default().ClientType = %q, want DefaultClientType %q", d.ClientType, DefaultClientType)
+	}
 	if d.OfflineSyncStrategy != "auto" {
 		t.Errorf("expected offline_sync_strategy=auto, got %q", d.OfflineSyncStrategy)
 	}
@@ -53,6 +59,9 @@ func TestWriteDefaultAndLoad(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
+	if cfg.ClientType != DefaultClientType {
+		t.Errorf("client_type round-trip: got %q, want %q", cfg.ClientType, DefaultClientType)
+	}
 	if cfg.OfflineSyncStrategy != "auto" {
 		t.Errorf("expected auto, got %q", cfg.OfflineSyncStrategy)
 	}
@@ -115,6 +124,9 @@ max_concurrent_uploads: 5
 		t.Errorf("max_concurrent_uploads: got %d", cfg.MaxConcurrentUploads)
 	}
 	// defaults still applied for unset fields
+	if cfg.ClientType != DefaultClientType {
+		t.Errorf("client_type default: got %q, want %q", cfg.ClientType, DefaultClientType)
+	}
 	if cfg.OfflineSyncStrategy != "auto" {
 		t.Errorf("offline_sync_strategy default: got %q", cfg.OfflineSyncStrategy)
 	}
