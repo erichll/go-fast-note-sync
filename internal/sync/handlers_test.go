@@ -638,6 +638,86 @@ func TestHandleNoteSyncNeedPush_SendFailureDoesNotWritePendingOrComplete(t *test
 	}
 }
 
+func TestHandleNoteSyncDelete_PreservesDivergedLocalNoteForReconciliation(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("local change")
+	os.WriteFile(filepath.Join(dir, "note.md"), content, 0o644)
+	cfg := &config.Config{VaultPath: dir}
+	svc := newTestService(cfg, nil, "")
+	svc.st.FileHashMap["note.md"] = state.FileHashEntry{Hash: h.Content([]byte("synced version"))}
+
+	msg, _ := json.Marshal(receivePathMessage{Path: "note.md", LastTime: 44})
+	handleNoteSyncDelete(msg, svc)
+
+	got, err := os.ReadFile(filepath.Join(dir, "note.md"))
+	if err != nil {
+		t.Fatalf("diverged local note should be preserved: %v", err)
+	}
+	if string(got) != string(content) {
+		t.Fatalf("note content = %q, want %q", got, content)
+	}
+	svc.mu.Lock()
+	entry, baselineRetained := svc.st.FileHashMap["note.md"]
+	pending := svc.pendingNoteModifies["note.md"]
+	persistedPending := svc.st.PendingNoteModifies["note.md"]
+	completed := svc.noteSyncTasks.Completed
+	lastTime := svc.st.NoteSyncTime
+	svc.mu.Unlock()
+	if !baselineRetained || entry.Hash != h.Content([]byte("synced version")) {
+		t.Fatalf("baseline should be retained, got %+v", entry)
+	}
+	if want := h.Content(content); pending != want || persistedPending != want {
+		t.Fatalf("pending hash = %q/%q, want %q", pending, persistedPending, want)
+	}
+	if completed != 1 || lastTime != 44 {
+		t.Fatalf("completed/lastTime = %d/%d, want 1/44", completed, lastTime)
+	}
+}
+
+func TestHandleNoteSyncDelete_PreservesLocalNoteWithoutBaseline(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("unverifiable local content")
+	os.WriteFile(filepath.Join(dir, "note.md"), content, 0o644)
+	cfg := &config.Config{VaultPath: dir}
+	svc := newTestService(cfg, nil, "")
+
+	msg, _ := json.Marshal(receivePathMessage{Path: "note.md"})
+	handleNoteSyncDelete(msg, svc)
+
+	if got, err := os.ReadFile(filepath.Join(dir, "note.md")); err != nil || string(got) != string(content) {
+		t.Fatalf("unverifiable local note should be preserved, got %q, err=%v", got, err)
+	}
+	svc.mu.Lock()
+	pending := svc.pendingNoteModifies["note.md"]
+	persistedPending := svc.st.PendingNoteModifies["note.md"]
+	svc.mu.Unlock()
+	if want := h.Content(content); pending != want || persistedPending != want {
+		t.Fatalf("pending hash = %q/%q, want %q", pending, persistedPending, want)
+	}
+}
+
+func TestHandleNoteSyncDelete_CleansStateWhenLocalNoteIsAlreadyMissing(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{VaultPath: dir}
+	svc := newTestService(cfg, nil, "")
+	svc.st.FileHashMap["note.md"] = state.FileHashEntry{Hash: "synced"}
+	svc.setPendingNoteModify("note.md", "pending")
+	svc.lastSyncMtime["note.md"] = 1
+
+	msg, _ := json.Marshal(receivePathMessage{Path: "note.md"})
+	handleNoteSyncDelete(msg, svc)
+
+	svc.mu.Lock()
+	_, baselineRetained := svc.st.FileHashMap["note.md"]
+	_, pending := svc.pendingNoteModifies["note.md"]
+	_, persistedPending := svc.st.PendingNoteModifies["note.md"]
+	_, ignoredMtime := svc.lastSyncMtime["note.md"]
+	svc.mu.Unlock()
+	if baselineRetained || pending || persistedPending || ignoredMtime {
+		t.Fatalf("missing note state should be cleaned: baseline=%v pending=%v persisted=%v mtime=%v", baselineRetained, pending, persistedPending, ignoredMtime)
+	}
+}
+
 func TestHandleNoteModifyAck_CommitsPendingAndReleasesSlot(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "ack.md"), []byte("ack"), 0o644)
@@ -794,7 +874,7 @@ func TestM14NoteMtimeDeleteRenameAndAcks(t *testing.T) {
 	cfg := &config.Config{Vault: "V", VaultPath: dir}
 	svc := newTestService(cfg, nil, "")
 	svc.setPendingNoteModify("mtime.md", h.Content([]byte("mtime")))
-	svc.st.FileHashMap["delete.md"] = state.FileHashEntry{Hash: "old"}
+	svc.st.FileHashMap["delete.md"] = state.FileHashEntry{Hash: h.Content([]byte("delete"))}
 	svc.st.FileHashMap["old.md"] = state.FileHashEntry{Hash: "oldhash"}
 
 	mtimeMsg, _ := json.Marshal(receiveMtimeMessage{Path: "mtime.md", MTime: 2000, LastTime: 20})

@@ -186,6 +186,21 @@ func handleNoteSyncDelete(data json.RawMessage, s *SyncService) {
 	}
 	unlock := s.lockPath(rp.Rel)
 	defer unlock()
+	if content, err := os.ReadFile(rp.Abs); err == nil {
+		contentHash := h.Content(content)
+		s.mu.Lock()
+		entry, hasBaseline := s.st.FileHashMap[rp.Rel]
+		s.mu.Unlock()
+		if !hasBaseline || entry.Hash != contentHash {
+			log.Printf("[handler] NoteSyncDelete preserve diverged local note %q", rp.Rel)
+			s.setPendingNoteModify(rp.Rel, contentHash)
+			s.saveStateLog("NoteSyncDelete divergence")
+			return
+		}
+	} else if !os.IsNotExist(err) {
+		log.Printf("[handler] NoteSyncDelete read %q: %v", rp.Rel, err)
+		return
+	}
 	if err := os.Remove(rp.Abs); err != nil && !os.IsNotExist(err) {
 		log.Printf("[handler] NoteSyncDelete remove %q: %v", rp.Rel, err)
 		return
