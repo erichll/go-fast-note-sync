@@ -412,6 +412,15 @@ func (s *SyncService) sendFileContentModify(action string, rp resolvedPath, pend
 		"mtime":       info.ModTime().UnixMilli(),
 		"ctime":       info.ModTime().UnixMilli(),
 	}
+	if action == "NoteModify" {
+		s.mu.Lock()
+		if entry, ok := s.st.FileHashMap[rp.Rel]; ok && entry.Hash != "" {
+			payload["baseHash"] = entry.Hash
+		} else {
+			payload["baseHashMissing"] = true
+		}
+		s.mu.Unlock()
+	}
 	s.concurrency.WaitForSlot(rp.Rel, false, 0)
 	if err := s.Send(action, payload); err != nil {
 		s.concurrency.ReleaseSlot(rp.Rel)
