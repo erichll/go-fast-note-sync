@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -582,6 +583,111 @@ func TestHandleNoteSyncModify_WritesFileAndRejectsTraversal(t *testing.T) {
 	handleNoteSyncModify(bad, svc)
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "evil.md")); !os.IsNotExist(err) {
 		t.Fatalf("traversal path should not be written, stat err=%v", err)
+	}
+}
+
+func TestAtomicWriteFile_ReplacementFailurePreservesDestination(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "note.md")
+	original := []byte("original content")
+	if err := os.WriteFile(destination, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	originalReplaceFile := replaceFile
+	replaceFile = func(_, _ string) error {
+		return os.ErrPermission
+	}
+	t.Cleanup(func() { replaceFile = originalReplaceFile })
+
+	if err := atomicWriteFile(destination, []byte("replacement content")); err == nil {
+		t.Fatal("atomicWriteFile should report replacement failure")
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("destination = %q, want %q", got, original)
+	}
+}
+
+func TestAtomicWriteFile_ReplacesDestinationAndCleansTemporaryFile(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(destination, []byte("original content"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := atomicWriteFile(destination, []byte("replacement content")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "replacement content" {
+		t.Fatalf("destination = %q, want replacement content", got)
+	}
+	info, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" {
+		if got, want := info.Mode().Perm(), os.FileMode(0o640); got != want {
+			t.Fatalf("destination mode = %o, want %o", got, want)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "note.md" {
+		t.Fatalf("directory entries = %#v, want only note.md", entries)
+	}
+}
+
+func TestHandleNoteSyncModify_ReplacementFailurePreservesState(t *testing.T) {
+	dir := t.TempDir()
+	destination := filepath.Join(dir, "note.md")
+	if err := os.WriteFile(destination, []byte("original content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{VaultPath: dir}
+	svc := newTestService(cfg, nil, "")
+	svc.st.NoteSyncTime = 7
+	svc.st.FileHashMap["note.md"] = state.FileHashEntry{Hash: "old-hash"}
+	svc.pendingNoteModifies["note.md"] = "pending-hash"
+	svc.st.PendingNoteModifies["note.md"] = "pending-hash"
+
+	originalReplaceFile := replaceFile
+	replaceFile = func(_, _ string) error { return os.ErrPermission }
+	t.Cleanup(func() { replaceFile = originalReplaceFile })
+
+	content := "replacement content"
+	msg, _ := json.Marshal(receiveContentMessage{
+		Path:        "note.md",
+		Content:     content,
+		ContentHash: h.Content([]byte(content)),
+		LastTime:    99,
+	})
+	handleNoteSyncModify(msg, svc)
+
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "original content" {
+		t.Fatalf("destination = %q, want original content", got)
+	}
+	svc.mu.Lock()
+	entry := svc.st.FileHashMap["note.md"]
+	pending, pendingOK := svc.pendingNoteModifies["note.md"]
+	statePending, statePendingOK := svc.st.PendingNoteModifies["note.md"]
+	lastTime := svc.st.NoteSyncTime
+	svc.mu.Unlock()
+	if entry.Hash != "old-hash" || !pendingOK || pending != "pending-hash" || !statePendingOK || statePending != "pending-hash" || lastTime != 7 {
+		t.Fatalf("state changed after replacement failure: entry=%+v pending=%q/%v statePending=%q/%v lastTime=%d", entry, pending, pendingOK, statePending, statePendingOK, lastTime)
 	}
 }
 
