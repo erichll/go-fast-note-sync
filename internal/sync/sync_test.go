@@ -329,6 +329,7 @@ func newTestService(cfg *config.Config, st *state.State, statePath string) *Sync
 		scannedConfigHashes:      make(map[string]state.FileHashEntry),
 		concurrency:              NewConcurrencyManager(cfg),
 		pathLocks:                make(map[string]chan struct{}),
+		syncPages:                make(map[string]*syncPageTracker),
 		syncDoneCh:               make(chan struct{}),
 		// Fast timeouts so background goroutines terminate quickly in tests.
 		syncTimeout:     50 * time.Millisecond,
@@ -911,7 +912,7 @@ func TestPathHashPayload(t *testing.T) {
 	if payload["path"] != "notes/a.md" {
 		t.Fatalf("path = %v", payload["path"])
 	}
-	if payload["pathHash"] != "b33a8099b01219568f1660eb604d897c0ac5db4fdd84c142337f129d5a0fca4d" {
+	if payload["pathHash"] != "-115809070" {
 		t.Fatalf("pathHash = %v", payload["pathHash"])
 	}
 }
@@ -966,6 +967,177 @@ func TestHandlerDispatch_InvokesRegistered(t *testing.T) {
 	svc.dispatchText(`NoteSyncEnd|{"code":200,"data":{"lastTime":12345}}`)
 	if got == nil {
 		t.Fatal("handler was not invoked")
+	}
+}
+
+func TestHandlerDispatch_StartsNoteSyncPaging(t *testing.T) {
+	conn := newFakeWSConn()
+	svc := newTestService(&config.Config{Vault: "vault"}, nil, "")
+	svc.conn = conn
+
+	svc.dispatchText(`NoteSyncEnd|{"code":200,"vault":"vault","context":"sync-context","data":{"needUploadCount":1914}}`)
+
+	written := conn.Written()
+	if len(written) != 1 {
+		t.Fatalf("written messages = %v, want initial page ACK", written)
+	}
+	if written[0] != `NoteSyncPageAck|{"context":"sync-context","pageIndex":-1,"vault":"vault"}` {
+		t.Fatalf("initial page ACK = %q", written[0])
+	}
+}
+
+func TestHandlerDispatch_AcksCompletedNoteSyncPage(t *testing.T) {
+	conn := newFakeWSConn()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: t.TempDir()}, nil, "")
+	svc.conn = conn
+
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"sync-context","pageIndex":0,"data":{"pageSize":2,"totalCount":2,"isLast":false}}`)
+	svc.dispatchText(`NoteSyncModify|{"code":200,"vault":"vault","data":{"path":"one.md","content":"one","pageIndex":0}}`)
+	if written := conn.Written(); len(written) != 0 {
+		t.Fatalf("ACK sent before page completed: %v", written)
+	}
+	svc.dispatchText(`NoteSyncModify|{"code":200,"vault":"vault","data":{"path":"two.md","content":"two","pageIndex":0}}`)
+
+	written := conn.Written()
+	if len(written) != 1 {
+		t.Fatalf("written messages = %v, want one page ACK", written)
+	}
+	var payload struct {
+		Context   string `json:"context"`
+		Vault     string `json:"vault"`
+		PageIndex int    `json:"pageIndex"`
+	}
+	action, body, ok := strings.Cut(written[0], "|")
+	if !ok {
+		t.Fatalf("written message = %q, want action|payload", written[0])
+	}
+	if action != "NoteSyncPageAck" {
+		t.Fatalf("action = %q, want NoteSyncPageAck", action)
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		t.Fatalf("decode ACK: %v", err)
+	}
+	if payload.Context != "sync-context" || payload.Vault != "vault" || payload.PageIndex != 0 {
+		t.Fatalf("ACK payload = %+v", payload)
+	}
+}
+
+func TestHandlerDispatch_PropagatesEnvelopePageIndexToWorkItem(t *testing.T) {
+	conn := newFakeWSConn()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: t.TempDir()}, nil, "")
+	svc.conn = conn
+
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"sync-context","pageIndex":0,"data":{"pageSize":1,"totalCount":1,"isLast":false}}`)
+	svc.dispatchText(`NoteSyncModify|{"code":200,"vault":"vault","pageIndex":0,"data":{"path":"one.md","content":"one"}}`)
+
+	written := conn.Written()
+	if len(written) != 1 || !strings.HasPrefix(written[0], "NoteSyncPageAck|") {
+		t.Fatalf("page ACK = %v, want NoteSyncPageAck from envelope pageIndex", written)
+	}
+}
+
+func TestHandlerDispatch_UsesActivePageWhenDetailIndexDefaultsToZero(t *testing.T) {
+	conn := newFakeWSConn()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: t.TempDir()}, nil, "")
+	svc.conn = conn
+
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"ctx","data":{"pageIndex":0,"totalCount":1,"isLast":false}}`)
+	svc.dispatchText(`NoteSyncModify|{"code":200,"vault":"vault","data":{"path":"one.md","content":"one"}}`)
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"ctx","data":{"pageIndex":1,"totalCount":1,"isLast":false}}`)
+	svc.dispatchText(`NoteSyncModify|{"code":200,"vault":"vault","data":{"path":"two.md","content":"two"}}`)
+
+	written := conn.Written()
+	if len(written) != 2 || !strings.HasSuffix(written[1], `"pageIndex":1,"vault":"vault"}`) {
+		t.Fatalf("page ACKs = %v, want page 1 ACK for unindexed detail", written)
+	}
+}
+
+func TestHandlerDispatch_AcksContiguousPageWatermark(t *testing.T) {
+	conn := newFakeWSConn()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: t.TempDir()}, nil, "")
+	svc.conn = conn
+
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"ctx","pageIndex":0,"data":{"totalCount":1,"isLast":false}}`)
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"ctx","pageIndex":1,"data":{"totalCount":1,"isLast":false}}`)
+	svc.dispatchText(`NoteSyncModify|{"code":200,"vault":"vault","data":{"path":"two.md","content":"two","pageIndex":1}}`)
+	if written := conn.Written(); len(written) != 0 {
+		t.Fatalf("ACK skipped incomplete page 0: %v", written)
+	}
+	svc.dispatchText(`NoteSyncModify|{"code":200,"vault":"vault","data":{"path":"one.md","content":"one","pageIndex":0}}`)
+
+	written := conn.Written()
+	if len(written) != 1 || !strings.HasSuffix(written[0], `"pageIndex":1,"vault":"vault"}`) {
+		t.Fatalf("cumulative ACK = %v, want pageIndex 1", written)
+	}
+}
+
+func TestHandlerDispatch_UsesPageMessageIndex(t *testing.T) {
+	conn := newFakeWSConn()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: t.TempDir()}, nil, "")
+	svc.conn = conn
+
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"ctx","data":{"pageIndex":1,"totalCount":1,"isLast":false}}`)
+
+	svc.mu.Lock()
+	_, hasPageOne := svc.syncPages["note"].Pages[1]
+	svc.mu.Unlock()
+	if !hasPageOne {
+		t.Fatal("page metadata index from data was not registered")
+	}
+}
+
+func TestHandlerDispatch_AcksEmptyNonFinalPage(t *testing.T) {
+	conn := newFakeWSConn()
+	svc := newTestService(&config.Config{Vault: "vault"}, nil, "")
+	svc.conn = conn
+
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"ctx","pageIndex":0,"data":{"totalCount":0,"isLast":false}}`)
+
+	written := conn.Written()
+	if len(written) != 1 || !strings.HasSuffix(written[0], `"pageIndex":0,"vault":"vault"}`) {
+		t.Fatalf("empty page ACK = %v", written)
+	}
+}
+
+func TestHandlerDispatch_DoesNotAckFinalPage(t *testing.T) {
+	conn := newFakeWSConn()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: t.TempDir()}, nil, "")
+	svc.conn = conn
+
+	svc.dispatchText(`NoteSyncPage|{"code":200,"vault":"vault","context":"ctx","pageIndex":0,"data":{"totalCount":1,"isLast":true}}`)
+	svc.dispatchText(`NoteSyncModify|{"code":200,"vault":"vault","data":{"path":"one.md","content":"one","pageIndex":0}}`)
+
+	if written := conn.Written(); len(written) != 0 {
+		t.Fatalf("final page should not be ACKed: %v", written)
+	}
+}
+
+func TestHandlerDispatch_AcksCompletedPagesByModule(t *testing.T) {
+	tests := []struct {
+		name       string
+		pageAction string
+		workAction string
+		workData   string
+		wantAction string
+	}{
+		{name: "file", pageAction: "FileSyncPage", workAction: "FileSyncDelete", workData: `{"path":"missing.bin","pageIndex":0}`, wantAction: "FileSyncPageAck"},
+		{name: "setting", pageAction: "SettingSyncPage", workAction: "SettingSyncDelete", workData: `{"path":".obsidian/app.json","pageIndex":0}`, wantAction: "SettingSyncPageAck"},
+		{name: "folder", pageAction: "FolderSyncPage", workAction: "FolderSyncModify", workData: `{"path":"folder","pageIndex":0}`, wantAction: "FolderSyncPageAck"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn := newFakeWSConn()
+			svc := newTestService(&config.Config{Vault: "vault", VaultPath: t.TempDir()}, nil, "")
+			svc.conn = conn
+
+			svc.dispatchText(tt.pageAction + `|{"code":200,"vault":"vault","context":"ctx","pageIndex":0,"data":{"totalCount":1,"isLast":false}}`)
+			svc.dispatchText(tt.workAction + `|{"code":200,"vault":"vault","data":` + tt.workData + `}`)
+
+			written := conn.Written()
+			if len(written) != 1 || !strings.HasPrefix(written[0], tt.wantAction+"|") {
+				t.Fatalf("page ACK = %v, want %s", written, tt.wantAction)
+			}
+		})
 	}
 }
 

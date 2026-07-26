@@ -36,6 +36,7 @@ type FileDownloadSession struct {
 	SlotHeld    bool
 	Merging     bool
 	Cancelled   bool
+	PageIndex   *int
 }
 
 type ActiveUpload struct {
@@ -44,6 +45,7 @@ type ActiveUpload struct {
 	SessionID string
 	Cancelled bool
 	SlotHeld  bool
+	PageIndex *int
 }
 
 type fileSyncChunkDownloadMessage struct {
@@ -64,6 +66,7 @@ type fileUploadMessage struct {
 	MTime     int64  `json:"mtime"`
 	SessionID string `json:"sessionId"`
 	ChunkSize int    `json:"chunkSize"`
+	PageIndex *int   `json:"pageIndex,omitempty"`
 }
 
 func tempChunksBaseDir(statePath string) string {
@@ -149,12 +152,14 @@ func handleFileSyncUpdate(data json.RawMessage, s *SyncService) {
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || s.isVaultFileExcluded(msg.Path) || strings.HasSuffix(strings.ToLower(msg.Path), ".md") {
 		s.incrementCompleted("file")
+		s.completeSyncPage("file", msg.PageIndex)
 		return
 	}
 	if s.cfg.BinarySyncLimitEnabled && msg.Size > binarySyncSizeLimit {
 		log.Printf("[handler] FileSyncUpdate skip large file %q size=%d", rp.Rel, msg.Size)
 		s.updateSyncTime("file", msg.LastTime)
 		s.incrementCompleted("file")
+		s.completeSyncPage("file", msg.PageIndex)
 		return
 	}
 
@@ -181,6 +186,7 @@ func handleFileSyncUpdate(data json.RawMessage, s *SyncService) {
 		session.CTime = msg.CTime
 		session.MTime = msg.MTime
 		session.LastTime = msg.LastTime
+		session.PageIndex = msg.PageIndex
 		session.SlotHeld = true
 		totalChunks := session.TotalChunks
 		s.mu.Unlock()
@@ -197,6 +203,7 @@ func handleFileSyncUpdate(data json.RawMessage, s *SyncService) {
 			CTime:       msg.CTime,
 			MTime:       msg.MTime,
 			LastTime:    msg.LastTime,
+			PageIndex:   msg.PageIndex,
 			Size:        msg.Size,
 			Received:    make(map[uint32]struct{}),
 			SlotHeld:    true,
@@ -218,6 +225,7 @@ func handleFileSyncUpdate(data json.RawMessage, s *SyncService) {
 		}
 		s.mu.Unlock()
 		log.Printf("[handler] FileSyncUpdate request chunk %q: %v", rp.Rel, err)
+		s.completeSyncPage("file", msg.PageIndex)
 		return
 	}
 	s.incrementCompleted("file")
@@ -251,6 +259,7 @@ func handleFileSyncChunkDownload(data json.RawMessage, s *SyncService) {
 			CTime:       msg.CTime,
 			MTime:       msg.MTime,
 			LastTime:    temp.LastTime,
+			PageIndex:   temp.PageIndex,
 			SessionID:   msg.SessionID,
 			TotalChunks: msg.TotalChunks,
 			Size:        msg.Size,
@@ -306,33 +315,34 @@ func handleFileUpload(data json.RawMessage, s *SyncService) {
 		return
 	}
 	if s.cfg.ReadOnlySyncEnabled {
-		s.incrementCompleted("file")
+		s.incrementCompletedPage("file", msg.PageIndex)
 		return
 	}
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || s.isVaultFileExcluded(msg.Path) || strings.HasSuffix(strings.ToLower(msg.Path), ".md") {
-		s.incrementCompleted("file")
+		s.incrementCompletedPage("file", msg.PageIndex)
 		return
 	}
 	info, err := os.Stat(rp.Abs)
 	if err != nil {
-		s.incrementCompleted("file")
+		s.incrementCompletedPage("file", msg.PageIndex)
 		return
 	}
 	if s.cfg.BinarySyncLimitEnabled && info.Size() > binarySyncSizeLimit {
 		log.Printf("[handler] FileUpload skip large file %q size=%d", rp.Rel, info.Size())
-		s.incrementCompleted("file")
+		s.incrementCompletedPage("file", msg.PageIndex)
 		return
 	}
 
 	s.mu.Lock()
 	upload := s.activeUploads[rp.Rel]
 	if upload == nil {
-		upload = &ActiveUpload{Path: rp.Rel, PathHash: msg.PathHash}
+		upload = &ActiveUpload{Path: rp.Rel, PathHash: msg.PathHash, PageIndex: msg.PageIndex}
 		s.activeUploads[rp.Rel] = upload
 	}
 	upload.SessionID = msg.SessionID
 	upload.PathHash = msg.PathHash
+	upload.PageIndex = msg.PageIndex
 	slotHeld := upload.SlotHeld
 	s.mu.Unlock()
 	if !slotHeld {
@@ -353,10 +363,10 @@ func handleFileSyncDelete(data json.RawMessage, s *SyncService) {
 	var msg receivePathMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("[handler] FileSyncDelete parse: %v", err)
-		s.incrementCompleted("file")
+		s.incrementCompletedPage("file", msg.PageIndex)
 		return
 	}
-	defer s.incrementCompleted("file")
+	defer s.incrementCompletedPage("file", msg.PageIndex)
 	s.updateSyncTime("file", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || s.isVaultFileExcluded(msg.Path) || strings.HasSuffix(strings.ToLower(msg.Path), ".md") {
@@ -385,7 +395,7 @@ func handleFileSyncMtime(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("file")
 		return
 	}
-	defer s.incrementCompleted("file")
+	defer s.incrementCompletedPage("file", msg.PageIndex)
 	s.updateSyncTime("file", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || s.isVaultFileExcluded(msg.Path) {
@@ -421,7 +431,7 @@ func handleFileSyncRename(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("file")
 		return
 	}
-	defer s.incrementCompleted("file")
+	defer s.incrementCompletedPage("file", msg.PageIndex)
 	s.updateSyncTime("file", msg.LastTime)
 	oldRP, oldErr := s.resolveVaultPath(msg.OldPath)
 	newRP, newErr := s.resolveVaultPath(msg.Path)
@@ -650,6 +660,9 @@ func (s *SyncService) abortDownloadSession(sessionID, reason string) {
 	if session != nil && session.TempDir != "" {
 		_ = os.RemoveAll(session.TempDir)
 	}
+	if session != nil {
+		s.completeSyncPage("file", session.PageIndex)
+	}
 	log.Printf("[handler] abort download session=%s reason=%s", sessionID, reason)
 }
 
@@ -743,6 +756,7 @@ func (s *SyncService) mergeDownloadSession(session *FileDownloadSession) {
 	s.mu.Unlock()
 	_ = os.RemoveAll(session.TempDir)
 	s.saveStateLog("FileDownloadComplete")
+	s.completeSyncPage("file", session.PageIndex)
 }
 
 func (s *SyncService) runFileUpload(rp resolvedPath, msg fileUploadMessage, upload *ActiveUpload, chunkSize int) {
@@ -752,7 +766,7 @@ func (s *SyncService) runFileUpload(rp resolvedPath, msg fileUploadMessage, uplo
 		s.releaseFailedUploadSlot(upload)
 		return
 	}
-	contentHash := h.Content(content)
+	contentHash := h.FileContent(content)
 	totalChunks := 1
 	if len(content) > 0 {
 		totalChunks = (len(content) + chunkSize - 1) / chunkSize
@@ -814,8 +828,8 @@ func (s *SyncService) runFileUpload(rp resolvedPath, msg fileUploadMessage, uplo
 
 	s.mu.Lock()
 	delete(s.activeUploads, rp.Rel)
-	s.fileSyncTasks.Completed++
 	s.mu.Unlock()
+	s.incrementCompletedPage("file", msg.PageIndex)
 }
 
 func (s *SyncService) uploadStartChunk(pathHash, sessionID, contentHash string, totalChunks int) int {
@@ -846,12 +860,15 @@ func (s *SyncService) releaseFailedUploadSlot(upload *ActiveUpload) {
 		s.concurrency.ReleaseSlot(upload.Path)
 	}
 	s.mu.Unlock()
+	s.completeSyncPage("file", upload.PageIndex)
 }
 
 func (s *SyncService) cancelUpload(rel string) {
 	s.mu.Lock()
 	upload := s.activeUploads[rel]
+	var pageIndex *int
 	if upload != nil {
+		pageIndex = upload.PageIndex
 		upload.Cancelled = true
 		if upload.SlotHeld {
 			upload.SlotHeld = false
@@ -866,6 +883,7 @@ func (s *SyncService) cancelUpload(rel string) {
 	delete(s.st.PendingUploadHashes, rel)
 	s.mu.Unlock()
 	s.saveStateLog("FileUploadCancel")
+	s.completeSyncPage("file", pageIndex)
 }
 
 func (s *SyncService) SendFileUploadCheck(raw string) error {

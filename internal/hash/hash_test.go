@@ -8,8 +8,7 @@ import (
 
 func TestContent(t *testing.T) {
 	h := Content([]byte("hello"))
-	// SHA256("hello") = 2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824
-	want := "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+	want := "99162322"
 	if h != want {
 		t.Errorf("Content(hello): want %s, got %s", want, h)
 	}
@@ -17,10 +16,15 @@ func TestContent(t *testing.T) {
 
 func TestContentEmpty(t *testing.T) {
 	h := Content([]byte{})
-	// SHA256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
-	want := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	want := "0"
 	if h != want {
 		t.Errorf("Content(empty): want %s, got %s", want, h)
+	}
+}
+
+func TestTextUsesJavaScriptUTF16CodeUnits(t *testing.T) {
+	if got, want := Text("A😀"), "1835364"; got != want {
+		t.Errorf("Text(A😀): want %s, got %s", want, got)
 	}
 }
 
@@ -34,8 +38,8 @@ func TestPath(t *testing.T) {
 	if h1 == h3 {
 		t.Error("different paths should produce different hashes")
 	}
-	if len(h1) != 64 {
-		t.Errorf("expected 64 hex chars, got %d", len(h1))
+	if h1 != Text("notes/foo.md") {
+		t.Errorf("Path should use text hashing: got %s", h1)
 	}
 }
 
@@ -59,6 +63,40 @@ func TestFile(t *testing.T) {
 	}
 	if mtime == 0 {
 		t.Error("mtime should be non-zero")
+	}
+}
+
+func TestTextFileUsesUTF16Hash(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unicode.md")
+	if err := os.WriteFile(path, []byte("A😀"), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, _, _, err := TextFile(path)
+	if err != nil {
+		t.Fatalf("TextFile: %v", err)
+	}
+	if want := Text("A😀"); got != want {
+		t.Errorf("TextFile: want %s, got %s", want, got)
+	}
+	if got == Content([]byte("A😀")) {
+		t.Error("text and byte hashes should differ for non-ASCII content")
+	}
+}
+
+func TestFileContentSamplesLargeData(t *testing.T) {
+	data := make([]byte, fullFileHashLimit+1)
+	for index := range data {
+		data[index] = byte(index)
+	}
+	middle := len(data)/2 - fileHashSample/2
+	sample := make([]byte, 0, fileHashSample*3)
+	sample = append(sample, data[:fileHashSample]...)
+	sample = append(sample, data[middle:middle+fileHashSample]...)
+	sample = append(sample, data[len(data)-fileHashSample:]...)
+	if got, want := FileContent(data), Content(sample); got != want {
+		t.Errorf("FileContent(large): want %s, got %s", want, got)
 	}
 }
 

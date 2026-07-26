@@ -45,6 +45,9 @@ func handleNoteSyncEnd(data json.RawMessage, s *SyncService) {
 	s.mu.Lock()
 	// Commit scanned hashes (only if newer than existing entry).
 	for path, entry := range scanned {
+		if _, pending := s.pendingNoteModifies[path]; pending {
+			continue
+		}
 		if existing, ok := s.st.FileHashMap[path]; !ok || existing.MTime <= entry.MTime {
 			s.st.FileHashMap[path] = entry
 		}
@@ -67,8 +70,7 @@ func handleNoteSyncModify(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("note")
 		return
 	}
-	defer s.incrementCompleted("note")
-	s.updateSyncTime("note", msg.LastTime)
+	defer s.incrementCompletedPage("note", msg.PageIndex)
 
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || !strings.HasSuffix(strings.ToLower(msg.Path), ".md") || s.isVaultFileExcluded(msg.Path) {
@@ -89,6 +91,7 @@ func handleNoteSyncModify(data json.RawMessage, s *SyncService) {
 		log.Printf("[handler] NoteSyncModify write %q: %v", rp.Rel, err)
 		return
 	}
+	s.updateSyncTime("note", msg.LastTime)
 	mtime := msg.MTime
 	if mtime > 0 {
 		tm := unixMilli(mtime)
@@ -99,7 +102,7 @@ func handleNoteSyncModify(data json.RawMessage, s *SyncService) {
 		return
 	}
 	if entry.Hash == "" {
-		entry.Hash = h.Content([]byte(msg.Content))
+		entry.Hash = h.Text(msg.Content)
 	}
 	s.mu.Lock()
 	s.st.FileHashMap[rp.Rel] = entry
@@ -114,7 +117,7 @@ func handleNoteSyncNeedPush(data json.RawMessage, s *SyncService) {
 	var msg receivePathMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("[handler] NoteSyncNeedPush parse: %v", err)
-		s.incrementCompleted("note")
+		s.incrementCompletedPage("note", msg.PageIndex)
 		return
 	}
 	s.updateSyncTime("note", msg.LastTime)
@@ -123,14 +126,14 @@ func handleNoteSyncNeedPush(data json.RawMessage, s *SyncService) {
 		if err != nil {
 			log.Printf("[handler] NoteSyncNeedPush path %q: %v", msg.Path, err)
 		}
-		s.incrementCompleted("note")
+		s.incrementCompletedPage("note", msg.PageIndex)
 		return
 	}
 	if _, err := os.Stat(rp.Abs); err != nil {
-		s.incrementCompleted("note")
+		s.incrementCompletedPage("note", msg.PageIndex)
 		return
 	}
-	if err := s.sendFileContentModify("NoteModify", rp, s.setPendingNoteModify, func() { s.incrementCompleted("note") }); err != nil {
+	if err := s.sendFileContentModify("NoteModify", rp, s.setPendingNoteModify, func() { s.incrementCompletedPage("note", msg.PageIndex) }); err != nil {
 		log.Printf("[handler] NoteSyncNeedPush send %q: %v", rp.Rel, err)
 	}
 }
@@ -142,7 +145,7 @@ func handleNoteSyncMtime(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("note")
 		return
 	}
-	defer s.incrementCompleted("note")
+	defer s.incrementCompletedPage("note", msg.PageIndex)
 	s.updateSyncTime("note", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || s.isVaultFileExcluded(msg.Path) {
@@ -178,7 +181,7 @@ func handleNoteSyncDelete(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("note")
 		return
 	}
-	defer s.incrementCompleted("note")
+	defer s.incrementCompletedPage("note", msg.PageIndex)
 	s.updateSyncTime("note", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || s.isVaultFileExcluded(msg.Path) {
@@ -207,7 +210,7 @@ func handleNoteSyncRename(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("note")
 		return
 	}
-	defer s.incrementCompleted("note")
+	defer s.incrementCompletedPage("note", msg.PageIndex)
 	s.updateSyncTime("note", msg.LastTime)
 	oldRP, oldErr := s.resolveVaultPath(msg.OldPath)
 	newRP, newErr := s.resolveVaultPath(msg.Path)
@@ -232,7 +235,7 @@ func handleNoteSyncRename(data json.RawMessage, s *SyncService) {
 		delete(s.st.FileHashMap, oldRP.Rel)
 		entry.Hash = msg.ContentHash
 		if entry.Hash == "" {
-			entry.Hash = h.Content([]byte{})
+			entry.Hash = h.Text("")
 		}
 		if info, statErr := os.Stat(newRP.Abs); statErr == nil {
 			entry.MTime = info.ModTime().UnixMilli()
@@ -244,7 +247,7 @@ func handleNoteSyncRename(data json.RawMessage, s *SyncService) {
 		return
 	}
 	if msg.ContentHash != "" {
-		if got, _, _, err := h.File(newRP.Abs); err == nil && got == msg.ContentHash {
+		if got, _, _, err := h.TextFile(newRP.Abs); err == nil && got == msg.ContentHash {
 			s.mu.Lock()
 			s.st.FileHashMap[newRP.Rel] = state.FileHashEntry{Hash: got}
 			if info, statErr := os.Stat(newRP.Abs); statErr == nil {
@@ -307,7 +310,7 @@ func handleNoteRenameAck(data json.RawMessage, s *SyncService) {
 	delete(s.st.FileHashMap, item.OldPath)
 	entry.Hash = item.ContentHash
 	if entry.Hash == "" {
-		entry.Hash = h.Content([]byte{})
+		entry.Hash = h.Text("")
 	}
 	if rp, err := s.resolveVaultPath(item.NewPath); err == nil {
 		if info, statErr := os.Stat(rp.Abs); statErr == nil {

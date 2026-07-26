@@ -50,6 +50,7 @@ type syncDaemon interface {
 	local.Handler
 	Connect()
 	SyncComplete() <-chan struct{}
+	SyncError() error
 }
 
 type localWatcher interface {
@@ -206,6 +207,9 @@ func newSyncCmd() *cobra.Command {
 			defer cancel()
 			select {
 			case <-svc.SyncComplete():
+				if err := svc.SyncError(); err != nil {
+					return err
+				}
 				fmt.Fprintln(cmd.OutOrStdout(), "Sync complete.")
 				return nil
 			case <-ctx.Done():

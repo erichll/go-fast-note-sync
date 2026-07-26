@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -57,7 +58,7 @@ func TestStartLoadStateError(t *testing.T) {
 		t.Fatalf("init-config: %v", err)
 	}
 	data, _ := os.ReadFile(cfgPath)
-	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
+	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: "+strconv.Quote(statePath), 1)
 	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
 		t.Fatalf("rewrite config: %v", err)
 	}
@@ -90,7 +91,7 @@ func TestStartHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
-	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
+	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: "+strconv.Quote(statePath), 1)
 	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
 		t.Fatalf("rewrite config: %v", err)
 	}
@@ -108,6 +109,7 @@ func TestStartHappyPath(t *testing.T) {
 type fakeDaemon struct {
 	connected  bool
 	syncDoneCh chan struct{}
+	syncErr    error
 }
 
 func (f *fakeDaemon) Connect() {
@@ -119,6 +121,10 @@ func (f *fakeDaemon) SyncComplete() <-chan struct{} {
 		f.syncDoneCh = make(chan struct{})
 	}
 	return f.syncDoneCh
+}
+
+func (f *fakeDaemon) SyncError() error {
+	return f.syncErr
 }
 
 func (f *fakeDaemon) ShouldWatchDir(string) bool {
@@ -175,8 +181,8 @@ func TestStartWatcherGatedBySyncEnabledAndVaultPath(t *testing.T) {
 		t.Fatal(err)
 	}
 	updated := string(data)
-	updated = strings.Replace(updated, "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
-	updated = strings.Replace(updated, "vault_path: \"\"", "vault_path: \""+vaultPath+"\"", 1)
+	updated = strings.Replace(updated, "state_file: \"\"", "state_file: "+strconv.Quote(statePath), 1)
+	updated = strings.Replace(updated, "vault_path: \"\"", "vault_path: "+strconv.Quote(vaultPath), 1)
 	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +273,7 @@ func TestStatusCmd(t *testing.T) {
 					t.Fatalf("init-config: %v", err)
 				}
 				data, _ := os.ReadFile(cfgPath)
-				updated := strings.Replace(string(data), "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
+				updated := strings.Replace(string(data), "state_file: \"\"", "state_file: "+strconv.Quote(statePath), 1)
 				if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
 					t.Fatalf("rewrite config: %v", err)
 				}
@@ -349,7 +355,7 @@ func TestSyncCmd_Timeout(t *testing.T) {
 		t.Fatalf("init-config: %v", err)
 	}
 	data, _ := os.ReadFile(cfgPath)
-	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
+	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: "+strconv.Quote(statePath), 1)
 	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
 		t.Fatalf("rewrite config: %v", err)
 	}
@@ -378,7 +384,7 @@ func TestSyncCmd_Success(t *testing.T) {
 		t.Fatalf("init-config: %v", err)
 	}
 	data, _ := os.ReadFile(cfgPath)
-	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: \""+statePath+"\"", 1)
+	updated := strings.Replace(string(data), "state_file: \"\"", "state_file: "+strconv.Quote(statePath), 1)
 	if err := os.WriteFile(cfgPath, []byte(updated), 0o600); err != nil {
 		t.Fatalf("rewrite config: %v", err)
 	}

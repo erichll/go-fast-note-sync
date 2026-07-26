@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 )
+
+var writeMu sync.Mutex
 
 type FileHashEntry struct {
 	Hash  string `json:"hash"`
@@ -111,6 +114,9 @@ func Save(path string, s *State) error {
 // WriteFileAtomic writes data to path through a unique temporary file in the
 // same directory, then renames it into place.
 func WriteFileAtomic(path string, data []byte) error {
+	writeMu.Lock()
+	defer writeMu.Unlock()
+
 	if path == "" {
 		return fmt.Errorf("state path is empty")
 	}

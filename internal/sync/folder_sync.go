@@ -9,10 +9,11 @@ import (
 )
 
 type folderSyncMsgData struct {
-	Path     string `json:"path"`
-	MTime    int64  `json:"mtime"`
-	LastTime int64  `json:"lastTime"`
-	PathHash string `json:"pathHash"`
+	Path      string `json:"path"`
+	MTime     int64  `json:"mtime"`
+	LastTime  int64  `json:"lastTime"`
+	PathHash  string `json:"pathHash"`
+	PageIndex *int   `json:"pageIndex,omitempty"`
 }
 
 // handleFolderSyncEnd sets the folderSyncTasks need counts (BEFORE setting the flag).
@@ -54,17 +55,11 @@ func handleFolderSyncModify(data json.RawMessage, s *SyncService) {
 	var msg folderSyncMsgData
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("[handler] FolderSyncModify parse: %v", err)
-		s.mu.Lock()
-		s.folderSyncTasks.Completed++
-		s.mu.Unlock()
+		s.incrementCompleted("folder")
 		return
 	}
 
-	defer func() {
-		s.mu.Lock()
-		s.folderSyncTasks.Completed++
-		s.mu.Unlock()
-	}()
+	defer s.incrementCompletedPage("folder", msg.PageIndex)
 	s.updateSyncTime("folder", msg.LastTime)
 
 	if s.isFolderPathExcluded(msg.Path) {
@@ -99,17 +94,11 @@ func handleFolderSyncDelete(data json.RawMessage, s *SyncService) {
 	var msg folderSyncMsgData
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("[handler] FolderSyncDelete parse: %v", err)
-		s.mu.Lock()
-		s.folderSyncTasks.Completed++
-		s.mu.Unlock()
+		s.incrementCompleted("folder")
 		return
 	}
 
-	defer func() {
-		s.mu.Lock()
-		s.folderSyncTasks.Completed++
-		s.mu.Unlock()
-	}()
+	defer s.incrementCompletedPage("folder", msg.PageIndex)
 	s.updateSyncTime("folder", msg.LastTime)
 
 	if s.isFolderPathExcluded(msg.Path) {
@@ -162,7 +151,7 @@ func handleFolderSyncRename(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("folder")
 		return
 	}
-	defer s.incrementCompleted("folder")
+	defer s.incrementCompletedPage("folder", msg.PageIndex)
 	s.updateSyncTime("folder", msg.LastTime)
 	oldRP, oldErr := s.resolveVaultPath(msg.OldPath)
 	newRP, newErr := s.resolveVaultPath(msg.Path)
