@@ -68,7 +68,6 @@ func handleNoteSyncModify(data json.RawMessage, s *SyncService) {
 		return
 	}
 	defer s.incrementCompleted("note")
-	s.updateSyncTime("note", msg.LastTime)
 
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || !strings.HasSuffix(strings.ToLower(msg.Path), ".md") || s.isVaultFileExcluded(msg.Path) {
@@ -84,11 +83,12 @@ func handleNoteSyncModify(data json.RawMessage, s *SyncService) {
 		log.Printf("[handler] NoteSyncModify mkdir %q: %v", rp.Rel, err)
 		return
 	}
-	s.addIgnoredFile(rp.Rel)
-	if err := os.WriteFile(rp.Abs, []byte(msg.Content), 0o644); err != nil {
+	if err := atomicWriteFile(rp.Abs, []byte(msg.Content)); err != nil {
 		log.Printf("[handler] NoteSyncModify write %q: %v", rp.Rel, err)
 		return
 	}
+	s.updateSyncTime("note", msg.LastTime)
+	s.addIgnoredFile(rp.Rel)
 	mtime := msg.MTime
 	if mtime > 0 {
 		tm := unixMilli(mtime)
