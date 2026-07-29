@@ -135,6 +135,57 @@ func TestLoadNilMapsNormalized(t *testing.T) {
 	}
 }
 
+func TestLoadMigratesLegacyHashState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	legacy := map[string]interface{}{
+		"file_hash_map": map[string]interface{}{
+			"note.md": map[string]interface{}{"hash": "legacy-sha256", "mtime": 1, "size": 2},
+		},
+		"config_hash_map": map[string]interface{}{
+			".obsidian/app.json": map[string]interface{}{"hash": "legacy-sha256", "mtime": 3, "size": 4},
+		},
+		"folder_snapshot":         map[string]int64{"kept": 5},
+		"pending_note_modifies":   map[string]string{"note.md": "legacy"},
+		"pending_upload_hashes":   map[string]string{"file.bin": "legacy"},
+		"pending_config_modifies": map[string]string{".obsidian/app.json": "legacy"},
+		"upload_checkpoints":      map[string]interface{}{"legacy-path": map[string]interface{}{"contentHash": "legacy"}},
+		"note_sync_time":          10,
+		"file_sync_time":          11,
+		"config_sync_time":        12,
+		"folder_sync_time":        13,
+		"ws_count":                14,
+		"is_init_sync":            true,
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.HashVersion != CurrentHashVersion {
+		t.Fatalf("HashVersion = %d, want %d", loaded.HashVersion, CurrentHashVersion)
+	}
+	if len(loaded.FileHashMap) != 0 || len(loaded.ConfigHashMap) != 0 ||
+		len(loaded.PendingNoteModifies) != 0 || len(loaded.PendingUploadHashes) != 0 ||
+		len(loaded.PendingConfigModifies) != 0 || len(loaded.UploadCheckpoints) != 0 {
+		t.Fatalf("legacy hash state was not cleared: %+v", loaded)
+	}
+	if loaded.NoteSyncTime != 0 || loaded.FileSyncTime != 0 ||
+		loaded.ConfigSyncTime != 0 || loaded.FolderSyncTime != 0 || loaded.IsInitSync {
+		t.Fatalf("legacy incremental state was not reset: %+v", loaded)
+	}
+	if loaded.FolderSnapshot["kept"] != 5 || loaded.WsCount != 14 {
+		t.Fatalf("hash-independent state was not preserved: %+v", loaded)
+	}
+}
+
 func TestSaveCreatesDir(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "deep", "state.json")

@@ -684,10 +684,11 @@ func TestHandleNoteSyncModify_ReplacementFailurePreservesState(t *testing.T) {
 	entry := svc.st.FileHashMap["note.md"]
 	pending, pendingOK := svc.pendingNoteModifies["note.md"]
 	statePending, statePendingOK := svc.st.PendingNoteModifies["note.md"]
+	_, ignored := svc.lastSyncMtime["note.md"]
 	lastTime := svc.st.NoteSyncTime
 	svc.mu.Unlock()
-	if entry.Hash != "old-hash" || !pendingOK || pending != "pending-hash" || !statePendingOK || statePending != "pending-hash" || lastTime != 7 {
-		t.Fatalf("state changed after replacement failure: entry=%+v pending=%q/%v statePending=%q/%v lastTime=%d", entry, pending, pendingOK, statePending, statePendingOK, lastTime)
+	if entry.Hash != "old-hash" || !pendingOK || pending != "pending-hash" || !statePendingOK || statePending != "pending-hash" || ignored || lastTime != 7 {
+		t.Fatalf("state changed after replacement failure: entry=%+v pending=%q/%v statePending=%q/%v ignored=%v lastTime=%d", entry, pending, pendingOK, statePending, statePendingOK, ignored, lastTime)
 	}
 }
 

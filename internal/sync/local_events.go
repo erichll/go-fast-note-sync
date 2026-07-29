@@ -133,8 +133,9 @@ func (s *SyncService) HandleLocalRename(ev local.RenameEvent) local.Result {
 	s.mu.Lock()
 	_, oldEcho := s.lastSyncPathRenamed[oldRP.Rel]
 	_, newEcho := s.lastSyncPathRenamed[newRP.Rel]
+	_, remoteWriteEcho := s.lastSyncMtime[newRP.Rel]
 	s.mu.Unlock()
-	if oldEcho || newEcho {
+	if oldEcho || newEcho || remoteWriteEcho {
 		return localSkipped()
 	}
 

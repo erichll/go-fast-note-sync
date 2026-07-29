@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/erichll/go-fast-note-sync/internal/config"
+	h "github.com/erichll/go-fast-note-sync/internal/hash"
 	"github.com/erichll/go-fast-note-sync/internal/state"
 )
 
@@ -811,6 +812,34 @@ func TestScanConfigs_PluginsDir(t *testing.T) {
 	}
 	if got[".obsidian/plugins/my-plugin/ignored.txt"] {
 		t.Error("unknown extension .txt should not be scanned in plugins dir")
+	}
+}
+
+func TestScanConfigs_UsesBinaryHashForFilesystemConfig(t *testing.T) {
+	dir := t.TempDir()
+	configDir := filepath.Join(dir, ".obsidian")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte(`{"label":"同步"}`)
+	if err := os.WriteFile(filepath.Join(configDir, "app.json"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{VaultPath: dir, ConfigSyncEnabled: true}
+	svc := newTestService(cfg, nil, "")
+	result, err := svc.scanVault(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.configs) != 1 {
+		t.Fatalf("configs = %+v, want one app.json", result.configs)
+	}
+	if got, want := result.configs[0].ContentHash, h.FileContent(content); got != want {
+		t.Fatalf("filesystem config hash = %q, want binary hash %q", got, want)
+	}
+	if result.configs[0].ContentHash == h.Text(string(content)) {
+		t.Fatal("test fixture must distinguish binary config hashing from UTF-16 text hashing")
 	}
 }
 

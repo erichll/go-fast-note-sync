@@ -48,8 +48,8 @@ A_PID="$(start_daemon "${A_CFG}" "${A_LOG}")"
 trap 'stop_daemon "${A_PID}" TERM >/dev/null 2>&1 || true' EXIT
 wait_for_sync_round "${A_LOG}" 240
 wait_for_server_note_hash "${NOTE_REL}" "${A_NOTE_HASH}" 180
-wait_for_state "${A_STATE}" ".file_hash_map[\"${FILE_REL}\"].hash // \"\"" "${A_FILE_HASH}" 90
-wait_for_state "${A_STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" "${A_CFG_HASH}" 90
+wait_for_state_nonempty "${A_STATE}" ".file_hash_map[\"${FILE_REL}\"].hash // \"\"" 90
+wait_for_state_nonempty "${A_STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" 90
 server_snapshot "${PREFIX}" "${RUN_DIR}/server"
 stop_daemon "${A_PID}" TERM
 trap - EXIT

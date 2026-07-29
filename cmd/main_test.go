@@ -278,6 +278,7 @@ func TestStatusCmd(t *testing.T) {
 					t.Fatalf("rewrite config: %v", err)
 				}
 				st := &state.State{
+					HashVersion:           state.CurrentHashVersion,
 					FileHashMap:           map[string]state.FileHashEntry{"a.md": {}, "b.png": {}},
 					ConfigHashMap:         map[string]state.FileHashEntry{".obsidian/app.json": {}},
 					FolderSnapshot:        map[string]int64{"notes": 1000},

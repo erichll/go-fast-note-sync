@@ -45,8 +45,8 @@ log "first run: upload seed"
 PID="$(start_daemon "${CFG}" "${LOG1}")"
 trap 'stop_daemon "${PID}" TERM >/dev/null 2>&1 || true' EXIT
 wait_for_sync_round "${LOG1}" 240
-wait_for_state "${STATE}" ".file_hash_map[\"${NOTE_REL}\"].hash // \"\"" "${NOTE_HASH}" 90
-wait_for_state "${STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" "${CFG_HASH}" 90
+wait_for_state_nonempty "${STATE}" ".file_hash_map[\"${NOTE_REL}\"].hash // \"\"" 90
+wait_for_state_nonempty "${STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" 90
 stop_daemon "${PID}" TERM
 trap - EXIT
 SNAPSHOT_FIRST="${A_DIR}/state-after-1.json"

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	h "github.com/erichll/go-fast-note-sync/internal/hash"
 	"github.com/erichll/go-fast-note-sync/internal/local"
 	"github.com/erichll/go-fast-note-sync/internal/state"
 )
@@ -98,7 +99,8 @@ func TestNoteModifyPayloadBaseHash(t *testing.T) {
 		svc.st.IsInitSync = false
 		svc.isSyncing = false
 		relPath := ".obsidian/app.json"
-		writeVaultFile(t, svc.cfg.VaultPath, relPath, `{"theme":"dark"}`)
+		content := `{"theme":"深色"}`
+		writeVaultFile(t, svc.cfg.VaultPath, relPath, content)
 
 		svc.st.ConfigHashMap[relPath] = state.FileHashEntry{
 			Hash:  "config-base-hash",
@@ -130,6 +132,9 @@ func TestNoteModifyPayloadBaseHash(t *testing.T) {
 		}
 		if _, ok := payload["baseHashMissing"]; ok {
 			t.Errorf("SettingModify should not have baseHashMissing, got %v", payload["baseHashMissing"])
+		}
+		if got, want := payload["contentHash"], h.FileContent([]byte(content)); got != want {
+			t.Errorf("SettingModify contentHash = %v, want binary hash %q", got, want)
 		}
 	})
 }

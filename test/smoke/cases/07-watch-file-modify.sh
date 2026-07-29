@@ -33,14 +33,16 @@ INITIAL_HASH="$(sha256_file "${A_FILE}")"
 A_PID="$(start_daemon "${A_CFG}" "${A_LOG}")"
 trap 'stop_daemon "${A_PID}" TERM >/dev/null 2>&1 || true' EXIT
 wait_for_sync_round "${A_LOG}" 240
-wait_for_server_path "file" "${FILE_REL}" "${INITIAL_HASH}" 180
+wait_for_server_path "file" "${FILE_REL}" "" 180
+INITIAL_PROTOCOL_HASH="$(server_path_hash "file" "${FILE_REL}")"
+[ -n "${INITIAL_PROTOCOL_HASH}" ] || die "initial server protocol hash is empty"
 
 log "rewriting attachment via watcher path"
 dd if=/dev/urandom of="${A_FILE}" bs=1024 count=128 status=none  # 128 KiB
 MODIFIED_HASH="$(sha256_file "${A_FILE}")"
 [ "${INITIAL_HASH}" != "${MODIFIED_HASH}" ] || die "modify did not change content"
 
-wait_for_server_path "file" "${FILE_REL}" "${MODIFIED_HASH}" 300
+wait_for_server_path_hash_change "file" "${FILE_REL}" "${INITIAL_PROTOCOL_HASH}" 300
 server_snapshot "${PREFIX}" "${RUN_DIR}/server"
 stop_daemon "${A_PID}" TERM
 trap - EXIT

@@ -7,7 +7,7 @@
 #      case start and makes cases fully independent of each other.
 #      Pass --no-cleanup to skip cleanup (useful for debugging a single case).
 #      Pass --cleanup-daemon to use the daemon-based cleanup instead of the API.
-#   2. Runs every smoke case under `cases/0[1-9]-*.sh` and `cases/1[0-4]-*.sh`
+#   2. Runs every smoke case under `cases/0[1-9]-*.sh` and `cases/1[0-7]-*.sh`
 #      in order, capturing each case's stdout/stderr.
 #   3. Writes a markdown summary to `run/all-<UTC>/summary.md`.
 #
@@ -74,13 +74,13 @@ run_cleanup() {
 # --------------------------------------------------------------------------- #
 # Run cases (cleanup before each one)
 log ""
-log "===== running cases 01-16 (cleanup before each) ====="
+log "===== running cases 01-17 (cleanup before each) ====="
 
 declare -a RESULTS
 PASS=0
 FAIL=0
 BLOCKED=0
-CASE_GLOB=( "${SMOKE_DIR}"/cases/0[1-9]-*.sh "${SMOKE_DIR}"/cases/1[0-6]-*.sh )
+CASE_GLOB=( "${SMOKE_DIR}"/cases/0[1-9]-*.sh "${SMOKE_DIR}"/cases/1[0-7]-*.sh )
 
 for c in "${CASE_GLOB[@]}"; do
   [ -f "$c" ] || continue

@@ -29,7 +29,10 @@ ensure_prereqs() {
   need_cmd go
   need_cmd jq
   need_cmd curl
+  need_cmd find
   need_cmd sha256sum
+  need_cmd od
+  need_cmd seq
   need_cmd flock
   need_cmd awk
   need_cmd sed
@@ -89,7 +92,19 @@ smoke_api_get() {
 }
 
 path_hash() {
-  printf '%s' "$1" | sha256sum | awk '{print $1}'
+  # Smoke-generated paths are ASCII. Match the official signed int32
+  # hash=hash*31+UTF-16-code-unit contract without requiring another runtime.
+  printf '%s' "$1" | od -An -tu1 -v | awk '
+    {
+      for (i = 1; i <= NF; i++) {
+        hash = (hash * 31 + $i) % 4294967296
+      }
+    }
+    END {
+      if (hash >= 2147483648) hash -= 4294967296
+      printf "%.0f", hash
+    }
+  '
 }
 
 # server_path_record <note|file> <path> <out_json>
@@ -157,18 +172,49 @@ wait_for_server_path() {
   return 1
 }
 
+server_path_hash() {
+  local kind="$1" rel="$2"
+  local record
+  record="$(mktemp "${TMPDIR:-/tmp}/smoke-record-${kind}.XXXXXX")"
+  if ! server_path_record "$kind" "$rel" "$record"; then
+    rm -f "$record"
+    return 1
+  fi
+  jq -r '.contentHash // .hash // ""' "$record"
+  rm -f "$record"
+}
+
+wait_for_server_path_hash_change() {
+  local kind="$1" rel="$2" previous="$3" timeout="${4:-180}"
+  local end actual=""
+  end=$(( $(date +%s) + timeout ))
+  while [ "$(date +%s)" -lt "$end" ]; do
+    actual="$(server_path_hash "$kind" "$rel" 2>/dev/null || true)"
+    if [ -n "$actual" ] && [ "$actual" != "$previous" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  log "wait_for_server_path_hash_change: ${kind} ${rel} remained ${actual:-<missing>} after ${timeout}s"
+  return 1
+}
+
 # wait_for_server_note_hash <path> <sha256> [<timeout_sec>=180]
 # /api/notes confirms presence only; note history detail carries content.
 wait_for_server_note_hash() {
   local rel="$1" expected_hash="$2" timeout="${3:-180}"
-  local end histories detail latest_id actual ph
+  local end histories detail path_record latest_id actual ph
   end=$(( $(date +%s) + timeout ))
   histories="$(mktemp "${TMPDIR:-/tmp}/smoke-note-histories.XXXXXX")"
   detail="$(mktemp "${TMPDIR:-/tmp}/smoke-note-detail.XXXXXX")"
-  ph="$(path_hash "$rel")"
+  path_record="$(mktemp "${TMPDIR:-/tmp}/smoke-note-record.XXXXXX")"
   actual=""
   while [ "$(date +%s)" -lt "$end" ]; do
-    if smoke_api_get "/api/note/histories" -G \
+    ph=""
+    if server_path_record "note" "$rel" "$path_record"; then
+      ph="$(jq -r '.pathHash // ""' "$path_record")"
+    fi
+    if [ -n "$ph" ] && smoke_api_get "/api/note/histories" -G \
         --data-urlencode "vault=$(unique_vault_name)" \
         --data-urlencode "path=${rel}" \
         --data-urlencode "pathHash=${ph}" \
@@ -179,7 +225,7 @@ wait_for_server_note_hash() {
         if smoke_api_get "/api/note/history" -G --data-urlencode "id=${latest_id}" > "${detail}"; then
           actual="$(jq -j 'if ((.data.diffs // []) | length) > 0 then (.data.diffs[] | select(.Type != -1) | .Text) else (.data.content // "") end' "${detail}" | sha256sum | awk '{print $1}')"
           if [ "$actual" = "$expected_hash" ]; then
-            rm -f "${histories}" "${detail}"
+            rm -f "${histories}" "${detail}" "${path_record}"
             return 0
           fi
         fi
@@ -188,7 +234,7 @@ wait_for_server_note_hash() {
     sleep 1
   done
   log "wait_for_server_note_hash: ${rel} expected hash=${expected_hash}, got ${actual:-<missing>} after ${timeout}s"
-  rm -f "${histories}" "${detail}"
+  rm -f "${histories}" "${detail}" "${path_record}"
   return 1
 }
 
@@ -330,7 +376,9 @@ start_daemon() {
   [ -x "$bin" ] || die "binary not built: $bin (call build_binary first)"
   mkdir -p "$(dirname "$log_path")"
   : > "$log_path"
-  ( SYNC_API="$SYNC_API" SYNC_TOKEN="$SYNC_TOKEN" "$bin" start --config "$config_path" >>"$log_path" 2>&1 ) &
+  # Make the recorded PID the daemon itself. Relying on the shell to optimize
+  # the subshell's final command can leave a wrapper process that absorbs TERM.
+  ( SYNC_API="$SYNC_API" SYNC_TOKEN="$SYNC_TOKEN" exec "$bin" start --config "$config_path" >>"$log_path" 2>&1 ) &
   local pid=$!
   printf '%s\n' "$pid"
 }
@@ -417,6 +465,36 @@ wait_for_state() {
     sleep 0.5
   done
   log "wait_for_state: expected ${jq_expr}=${expected}, got ${actual:-<missing>} after ${timeout}s"
+  return 1
+}
+
+wait_for_state_nonempty() {
+  local state_file="$1" jq_expr="$2" timeout="${3:-60}"
+  local end=$(( $(date +%s) + timeout ))
+  local actual=""
+  while [ "$(date +%s)" -lt "$end" ]; do
+    if [ -f "$state_file" ]; then
+      actual="$(jq -r "$jq_expr" "$state_file" 2>/dev/null || true)"
+      if [ -n "$actual" ] && [ "$actual" != "null" ]; then return 0; fi
+    fi
+    sleep 0.5
+  done
+  log "wait_for_state_nonempty: expected non-empty ${jq_expr}, got ${actual:-<missing>} after ${timeout}s"
+  return 1
+}
+
+wait_for_state_change() {
+  local state_file="$1" jq_expr="$2" previous="$3" timeout="${4:-60}"
+  local end=$(( $(date +%s) + timeout ))
+  local actual=""
+  while [ "$(date +%s)" -lt "$end" ]; do
+    if [ -f "$state_file" ]; then
+      actual="$(jq -r "$jq_expr" "$state_file" 2>/dev/null || true)"
+      if [ -n "$actual" ] && [ "$actual" != "null" ] && [ "$actual" != "$previous" ]; then return 0; fi
+    fi
+    sleep 0.5
+  done
+  log "wait_for_state_change: ${jq_expr} remained ${actual:-<missing>} after ${timeout}s"
   return 1
 }
 

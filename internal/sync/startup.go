@@ -745,7 +745,7 @@ func (s *SyncService) scanConfigs(vaultPath string, configHashMap map[string]sta
 			}
 		}
 
-		contentHash, fromCache, hashErr := h.TextFileCached(absPath, fileHashMapToCache(configHashMap[relPath]))
+		contentHash, fromCache, hashErr := h.FileCached(absPath, fileHashMapToCache(configHashMap[relPath]))
 		if hashErr != nil {
 			log.Printf("[scan] hash config %q: %v", relPath, hashErr)
 			return

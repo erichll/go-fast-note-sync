@@ -970,6 +970,25 @@ func TestHandlerDispatch_InvokesRegistered(t *testing.T) {
 	}
 }
 
+func TestHandlerDispatch_TerminalSyncErrorClosesCompletion(t *testing.T) {
+	svc := newTestService(&config.Config{Vault: "vault"}, nil, "")
+	svc.isSyncing = true
+
+	svc.dispatchText(`NoteSync|{"code":500,"message":"failed","details":"database unavailable","vault":"vault"}`)
+
+	select {
+	case <-svc.SyncComplete():
+	default:
+		t.Fatal("terminal sync error did not close SyncComplete")
+	}
+	if err := svc.SyncError(); err == nil || !strings.Contains(err.Error(), "database unavailable") {
+		t.Fatalf("SyncError = %v, want terminal service details", err)
+	}
+	if svc.isSyncing {
+		t.Fatal("terminal sync error must clear isSyncing")
+	}
+}
+
 func TestHandlerDispatch_StartsNoteSyncPaging(t *testing.T) {
 	conn := newFakeWSConn()
 	svc := newTestService(&config.Config{Vault: "vault"}, nil, "")

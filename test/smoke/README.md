@@ -45,7 +45,10 @@ test/smoke/
 │   ├── 11-watch-delete.sh
 │   ├── 12-state-persist.sh
 │   ├── 13-reconnect.sh       # may be BLOCKED — see Plan.md M1.7.5
-│   └── 14-sensitive-config-exclusion.sh
+│   ├── 14-sensitive-config-exclusion.sh
+│   ├── 15-status-offline.sh
+│   ├── 16-sync-oneshot.sh
+│   └── 17-paged-note-downlink.sh
 └── run/                     # not in git; per-case run artifacts (`<case>-<UTC>/`)
 ```
 
@@ -131,6 +134,9 @@ capabilities (see Plan.md / Documentation.md).
 | 12 | M1.3 | State persistence: seed under the case prefix, init sync, stop, restart; second run keeps the seeded note + setting hashes byte-stable, `ws_count` increments by exactly 1, `is_init_sync` stays true. Server may legitimately re-push `need.upload>=1` on reconnect; the assertion is on client-side invariance for the seeded paths. | single client | ✅ |
 | 13 | M1.9 | In-process reconnect: SIGSTOP/SIGCONT around `RECONNECT_PAUSE_SEC` (default 90 s, ≥ pongWait); the client self-reconnects via its own read deadline without relying on the server closing the socket. Expect `[ws] reconnecting in …` and `wsCount=2`. | single client | ✅ |
 | 14 | M1.8 | Sensitive config exclusion: `.obsidian/plugins/fast-note-sync/data.json` is present and modified locally but never enters config hash/pending state, and a fresh B client does not materialize it from downlink. | two clients (A→B) | ✅ |
+| 15 | M1.10 | Offline `status` reports persisted counters and timestamps without contacting the service. | offline | ✅ |
+| 16 | M1.11 | One-shot `sync` times out non-zero on a tiny deadline and exits successfully only after a real completed sync round. | single client | ✅ |
+| 17 | M2.0 | Service 3.6 paged downlink: checkpoint both clients past retained tombstones, seed more than 200 notes, observe multiple `NoteSyncPage` messages and cumulative ACKs, verify B materializes every note, and confirm graceful shutdown after the atomic-write burst. | two clients (A→B) | ✅ |
 
 ## Authoring a new case
 

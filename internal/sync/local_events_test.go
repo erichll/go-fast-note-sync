@@ -246,6 +246,18 @@ func TestHandleLocalEventsEchoSuppression(t *testing.T) {
 			t.Fatalf("got result=%+v writes=%#v, want skip", got, conn.written)
 		}
 	})
+	t.Run("atomic remote write rename", func(t *testing.T) {
+		svc, conn, vault := newLocalEventService(t)
+		writeVaultFile(t, vault, "note.md", "remote content")
+		svc.lastSyncMtime["note.md"] = 1
+		got := svc.HandleLocalRename(local.RenameEvent{
+			OldPath: ".note.md.remote-write.tmp",
+			NewPath: "note.md",
+		})
+		if got.Attempted || len(conn.written) != 0 {
+			t.Fatalf("got result=%+v writes=%#v, want skip", got, conn.written)
+		}
+	})
 }
 
 func TestHandleLocalModifySendFailureDoesNotCommitPending(t *testing.T) {

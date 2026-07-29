@@ -35,7 +35,7 @@ log "uploading from A"
 A_PID="$(start_daemon "${A_CFG}" "${A_LOG}")"
 trap 'stop_daemon "${A_PID}" TERM >/dev/null 2>&1 || true' EXIT
 wait_for_sync_round "${A_LOG}" 300
-wait_for_server_path "file" "${ATTACH_REL}" "${SEED_HASH}" 300
+wait_for_server_path "file" "${ATTACH_REL}" "" 300
 server_snapshot "${PREFIX}" "${RUN_DIR}/server"
 stop_daemon "${A_PID}" TERM
 trap - EXIT

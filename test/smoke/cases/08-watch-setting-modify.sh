@@ -33,14 +33,15 @@ INITIAL_HASH="$(sha256_file "${A_SET}")"
 A_PID="$(start_daemon "${A_CFG}" "${A_LOG}")"
 trap 'stop_daemon "${A_PID}" TERM >/dev/null 2>&1 || true' EXIT
 wait_for_sync_round "${A_LOG}" 240
-wait_for_state "${A_STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" "${INITIAL_HASH}" 90
+wait_for_state_nonempty "${A_STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" 90
+INITIAL_PROTOCOL_HASH="$(read_state_json "${A_STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"")"
 
 log "rewriting setting via watcher path"
 printf '{"case":"%s","v":2,"ts":"%s"}\n' "${CASE_ID}" "$(utc_stamp)" > "${A_SET}"
 MODIFIED_HASH="$(sha256_file "${A_SET}")"
 [ "${INITIAL_HASH}" != "${MODIFIED_HASH}" ] || die "modify did not change content"
 
-wait_for_state "${A_STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" "${MODIFIED_HASH}" 240
+wait_for_state_change "${A_STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" "${INITIAL_PROTOCOL_HASH}" 240
 stop_daemon "${A_PID}" TERM
 trap - EXIT
 

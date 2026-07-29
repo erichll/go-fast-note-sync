@@ -39,14 +39,15 @@ assert_log_contains_literal "${LOG}" 'FileSyncEnd: lastTime'
 # the assertion is "we asked the server to accept an upload", not "exactly 1".
 assert_log_contains "${LOG}" 'FileSyncEnd:.*need=\{upload:[1-9]'
 
-wait_for_server_path "file" "${ATTACH_REL}" "${SEED_HASH}" 240
+wait_for_server_path "file" "${ATTACH_REL}" "" 240
 server_snapshot "${PREFIX}" "${RUN_DIR}/server"
 
 stop_daemon "${PID}" TERM
 trap - EXIT
 
 # Note: we do not assert pending_upload_hashes / upload_checkpoints empty here.
-# The server-side file contentHash above is the primary upload oracle; case 05
-# also verifies B-side binary download + sha256 match.
+# Server-side presence above is the upload oracle; protocol content hashes are
+# signed rolling hashes in service 3.6. Case 05 verifies downloaded bytes with
+# an independent sha256 comparison.
 
 log "case ${CASE_ID} PASS"

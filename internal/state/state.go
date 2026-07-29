@@ -11,6 +11,8 @@ import (
 
 var writeMu sync.Mutex
 
+const CurrentHashVersion = 2
+
 type FileHashEntry struct {
 	Hash  string `json:"hash"`
 	MTime int64  `json:"mtime"`
@@ -26,6 +28,8 @@ type UploadCheckpoint struct {
 }
 
 type State struct {
+	HashVersion int `json:"hash_version"`
+
 	FileHashMap    map[string]FileHashEntry `json:"file_hash_map"`
 	ConfigHashMap  map[string]FileHashEntry `json:"config_hash_map"`
 	FolderSnapshot map[string]int64         `json:"folder_snapshot"`
@@ -46,6 +50,7 @@ type State struct {
 
 func New() *State {
 	return &State{
+		HashVersion:           CurrentHashVersion,
 		FileHashMap:           make(map[string]FileHashEntry),
 		ConfigHashMap:         make(map[string]FileHashEntry),
 		FolderSnapshot:        make(map[string]int64),
@@ -99,6 +104,20 @@ func Load(path string) (*State, error) {
 	}
 	if s.UploadCheckpoints == nil {
 		s.UploadCheckpoints = make(map[string]UploadCheckpoint)
+	}
+	if s.HashVersion != CurrentHashVersion {
+		s.HashVersion = CurrentHashVersion
+		s.FileHashMap = make(map[string]FileHashEntry)
+		s.ConfigHashMap = make(map[string]FileHashEntry)
+		s.PendingNoteModifies = make(map[string]string)
+		s.PendingUploadHashes = make(map[string]string)
+		s.PendingConfigModifies = make(map[string]string)
+		s.UploadCheckpoints = make(map[string]UploadCheckpoint)
+		s.NoteSyncTime = 0
+		s.FileSyncTime = 0
+		s.ConfigSyncTime = 0
+		s.FolderSyncTime = 0
+		s.IsInitSync = false
 	}
 	return &s, nil
 }

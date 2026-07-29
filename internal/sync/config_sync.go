@@ -97,7 +97,7 @@ func handleSettingSyncModify(data json.RawMessage, s *SyncService) {
 		return
 	}
 	if entry.Hash == "" {
-		entry.Hash = h.Text(msg.Content)
+		entry.Hash = h.FileContent([]byte(msg.Content))
 	}
 	s.mu.Lock()
 	s.st.ConfigHashMap[rp.Rel] = entry

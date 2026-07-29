@@ -41,54 +41,52 @@ smoke_api_delete() {
 
 # delete_all_notes: paginate GET /api/notes?keyword=smoke/ and DELETE each.
 delete_all_notes() {
-  local page=1 page_size=100 total_rows=1 deleted=0
-  while [ $(( (page - 1) * page_size )) -lt "$total_rows" ]; do
+  local page_size=100 deleted=0
+  while true; do
     local resp
     resp="$(smoke_api_get "/api/notes" -G \
         --data-urlencode "vault=${VAULT}" \
-        --data-urlencode "page=${page}" \
+        --data-urlencode "page=1" \
         --data-urlencode "pageSize=${page_size}" \
         --data-urlencode "isRecycle=false" \
         --data-urlencode "keyword=smoke/")"
-    total_rows="$(printf '%s\n' "$resp" | jq -r '.data.pager.totalRows // 0')"
-    local paths path ph
-    paths="$(printf '%s\n' "$resp" | jq -r '.data.list[]? | .path')"
-    while IFS= read -r path; do
+    local records path ph
+    records="$(printf '%s\n' "$resp" | jq -r '.data.list[]? | [.path, (.pathHash // "")] | @tsv')"
+    [ -n "$records" ] || break
+    while IFS=$'\t' read -r path ph; do
       [ -n "$path" ] || continue
-      ph="$(path_hash "$path")"
+      [ -n "$ph" ] || ph="$(path_hash "$path")"
       smoke_api_delete "/api/note" \
         "{\"vault\":\"${VAULT}\",\"path\":\"${path}\",\"pathHash\":\"${ph}\"}" >/dev/null
       log "deleted note: ${path}"
       deleted=$((deleted + 1))
-    done <<< "$paths"
-    page=$((page + 1))
+    done <<< "$records"
   done
   log "notes deleted: ${deleted}"
 }
 
 # delete_all_files: paginate GET /api/files?keyword=smoke/ and DELETE each.
 delete_all_files() {
-  local page=1 page_size=100 total_rows=1 deleted=0
-  while [ $(( (page - 1) * page_size )) -lt "$total_rows" ]; do
+  local page_size=100 deleted=0
+  while true; do
     local resp
     resp="$(smoke_api_get "/api/files" -G \
         --data-urlencode "vault=${VAULT}" \
-        --data-urlencode "page=${page}" \
+        --data-urlencode "page=1" \
         --data-urlencode "pageSize=${page_size}" \
         --data-urlencode "isRecycle=false" \
         --data-urlencode "keyword=smoke/")"
-    total_rows="$(printf '%s\n' "$resp" | jq -r '.data.pager.totalRows // 0')"
-    local paths path ph
-    paths="$(printf '%s\n' "$resp" | jq -r '.data.list[]? | .path')"
-    while IFS= read -r path; do
+    local records path ph
+    records="$(printf '%s\n' "$resp" | jq -r '.data.list[]? | [.path, (.pathHash // "")] | @tsv')"
+    [ -n "$records" ] || break
+    while IFS=$'\t' read -r path ph; do
       [ -n "$path" ] || continue
-      ph="$(path_hash "$path")"
+      [ -n "$ph" ] || ph="$(path_hash "$path")"
       smoke_api_delete "/api/file" \
         "{\"vault\":\"${VAULT}\",\"path\":\"${path}\",\"pathHash\":\"${ph}\"}" >/dev/null
       log "deleted file: ${path}"
       deleted=$((deleted + 1))
-    done <<< "$paths"
-    page=$((page + 1))
+    done <<< "$records"
   done
   log "files deleted: ${deleted}"
 }
@@ -96,7 +94,7 @@ delete_all_files() {
 # delete_smoke_settings: GET /api/settings (no keyword filter) and DELETE
 # entries whose path starts with .obsidian/plugins/smoke-.
 delete_smoke_settings() {
-  local page=1 page_size=100 deleted=0
+  local page=1 page_size=100 deleted=0 all_records=""
   while true; do
     local resp
     resp="$(smoke_api_get "/api/settings" -G \
@@ -106,20 +104,23 @@ delete_smoke_settings() {
     local count
     count="$(printf '%s\n' "$resp" | jq -r '.data.list | length')"
     [ "$count" -gt 0 ] || break
-    local paths path ph
-    paths="$(printf '%s\n' "$resp" | jq -r '.data.list[]? | select(.path | startswith(".obsidian/plugins/smoke-")) | .path')"
-    while IFS= read -r path; do
-      [ -n "$path" ] || continue
-      ph="$(path_hash "$path")"
-      smoke_api_delete "/api/setting" \
-        "{\"vault\":\"${VAULT}\",\"path\":\"${path}\",\"pathHash\":\"${ph}\"}" >/dev/null
-      log "deleted setting: ${path}"
-      deleted=$((deleted + 1))
-    done <<< "$paths"
+    local records path ph
+    records="$(printf '%s\n' "$resp" | jq -r '.data.list[]? | select(.path | startswith(".obsidian/plugins/smoke-")) | [.path, (.pathHash // "")] | @tsv')"
+    if [ -n "$records" ]; then
+      all_records="${all_records}${all_records:+$'\n'}${records}"
+    fi
     # Settings API returns all entries; stop if we got a partial page.
     [ "$count" -ge "$page_size" ] || break
     page=$((page + 1))
   done
+  while IFS=$'\t' read -r path ph; do
+    [ -n "$path" ] || continue
+    [ -n "$ph" ] || ph="$(path_hash "$path")"
+    smoke_api_delete "/api/setting" \
+      "{\"vault\":\"${VAULT}\",\"path\":\"${path}\",\"pathHash\":\"${ph}\"}" >/dev/null
+    log "deleted setting: ${path}"
+    deleted=$((deleted + 1))
+  done <<< "$all_records"
   log "settings deleted: ${deleted}"
 }
 

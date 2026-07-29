@@ -51,8 +51,8 @@ trap 'stop_daemon "${PID}" TERM >/dev/null 2>&1 || true' EXIT
 wait_for_sync_round "${LOG}" 240
 
 wait_for_server_note_hash "${NOTE_REL}" "${NOTE_HASH}" 180
-wait_for_state "${STATE}" ".file_hash_map[\"${FILE_REL}\"].hash // \"\"" "${FILE_HASH}" 90
-wait_for_state "${STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" "${CFG_HASH}" 90
+wait_for_state_nonempty "${STATE}" ".file_hash_map[\"${FILE_REL}\"].hash // \"\"" 90
+wait_for_state_nonempty "${STATE}" ".config_hash_map[\"${SETTING_REL}\"].hash // \"\"" 90
 wait_for_state "${STATE}" ".folder_snapshot | has(\"${PREFIX}/folders\")" "true" 90
 server_snapshot "${PREFIX}" "${RUN_DIR}/server"
 

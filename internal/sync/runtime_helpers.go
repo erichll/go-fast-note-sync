@@ -553,7 +553,10 @@ func (s *SyncService) sendFileContentModify(action string, rp resolvedPath, pend
 	if err != nil {
 		return err
 	}
-	hash := h.Text(string(content))
+	hash := h.FileContent(content)
+	if action == "NoteModify" {
+		hash = h.Text(string(content))
+	}
 	info, err := os.Stat(rp.Abs)
 	if err != nil {
 		return err
@@ -601,7 +604,7 @@ func (s *SyncService) sendRename(action, oldRaw, newRaw string, pending func(str
 	contentHash := ""
 	if b, readErr := os.ReadFile(newRP.Abs); readErr == nil {
 		if action == "FileRename" {
-			contentHash = h.Content(b)
+			contentHash = h.FileContent(b)
 		} else {
 			contentHash = h.Text(string(b))
 		}

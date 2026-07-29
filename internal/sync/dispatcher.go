@@ -2,6 +2,7 @@ package sync
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 )
@@ -62,6 +63,10 @@ func (s *SyncService) dispatchText(raw string) {
 			log.Printf("[ws] service error: code=%d message=%q details=%q action=%q",
 				env.Code, env.Message, env.Details, action)
 		}
+		if isSyncRoundAction(action) {
+			s.onSyncFailed(fmt.Errorf("service %s failed: code=%d message=%s details=%s",
+				action, env.Code, env.Message, env.Details))
+		}
 		return
 	}
 
@@ -88,6 +93,16 @@ func (s *SyncService) dispatchText(raw string) {
 	handler(data, s)
 	if module, ok := syncEndModule(action); ok {
 		s.startSyncPaging(module, env.Context)
+	}
+}
+
+func isSyncRoundAction(action string) bool {
+	switch action {
+	case "NoteSync", "FileSync", "SettingSync", "FolderSync",
+		"NoteSyncPage", "FileSyncPage", "SettingSyncPage", "FolderSyncPage":
+		return true
+	default:
+		return false
 	}
 }
 
