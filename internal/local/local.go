@@ -31,4 +31,8 @@ type Handler interface {
 	HandleLocalModify(PathEvent) Result
 	HandleLocalDelete(PathEvent) Result
 	HandleLocalRename(RenameEvent) Result
+	// HandleWatchOverflow is called when the OS event queue overflowed and an
+	// unknown number of filesystem events were dropped. The only safe response
+	// is a full re-scan.
+	HandleWatchOverflow()
 }

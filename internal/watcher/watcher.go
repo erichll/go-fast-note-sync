@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -173,6 +174,14 @@ func (w *Watcher) loop() {
 			}
 			if err != nil {
 				log.Printf("[watcher] fsnotify: %v", err)
+				// An overflow means the OS dropped an unknown number of
+				// events. Nothing re-reads them, so without a full re-scan
+				// those writes are stranded until some later unrelated edit
+				// touches the same files.
+				if errors.Is(err, fsnotify.ErrEventOverflow) {
+					log.Printf("[watcher] event queue overflowed, requesting full re-scan")
+					w.handler.HandleWatchOverflow()
+				}
 			}
 		}
 	}

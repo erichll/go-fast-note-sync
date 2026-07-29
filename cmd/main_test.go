@@ -143,6 +143,8 @@ func (f *fakeDaemon) HandleLocalRename(local.RenameEvent) local.Result {
 	return local.Result{}
 }
 
+func (f *fakeDaemon) HandleWatchOverflow() {}
+
 type fakeLocalWatcher struct {
 	closed bool
 }

@@ -2,6 +2,7 @@ package sync
 
 import (
 	"errors"
+	"log"
 	"os"
 	"strings"
 
@@ -238,4 +239,20 @@ func (s *SyncService) sendLocalModifyForCategory(cat localCategory, rp resolvedP
 	default:
 		return nil
 	}
+}
+
+// HandleWatchOverflow responds to a dropped-event burst from the OS watcher.
+//
+// An overflow means an unknown set of local writes produced no event. Those
+// writes are invisible to the incremental path forever: an incremental scan
+// skips files whose mtime predates the last sync time, so a file written
+// during the overflow window is never re-offered. A full re-scan is the only
+// way to find them, so this deliberately ignores the persisted sync
+// timestamps.
+//
+// handleSync already refuses to start when a sync is in flight or when manual
+// sync mode is set, so this is safe to call at any time.
+func (s *SyncService) HandleWatchOverflow() {
+	log.Printf("[sync] watcher overflow: starting full re-scan to recover dropped events")
+	go s.handleSync(false)
 }
