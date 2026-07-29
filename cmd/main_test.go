@@ -35,6 +35,19 @@ func TestHelpOutput(t *testing.T) {
 	}
 }
 
+func TestVersionOutput(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"--version"})
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("--version returned error: %v", err)
+	}
+	if got := strings.TrimSpace(buf.String()); got != "go-fast-note-sync version "+cliVersion {
+		t.Fatalf("--version output = %q", got)
+	}
+}
+
 func TestStartLoadConfigError(t *testing.T) {
 	// Pointing --config at a non-existent path should surface the load error.
 	dir := t.TempDir()

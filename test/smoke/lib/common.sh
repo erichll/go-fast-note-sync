@@ -78,7 +78,7 @@ require_service_reachable() {
 # Default matches the Go daemon's DefaultClientType. Override via SMOKE_CLIENT_TYPE.
 api_client_type() { printf '%s\n' "${SMOKE_CLIENT_TYPE:-GoFastNoteSync}"; }
 api_client_name() { printf '%s\n' "${SMOKE_CLIENT_NAME:-smoke-harness}"; }
-api_client_version() { printf '%s\n' "${SMOKE_CLIENT_VERSION:-0.1.0-dev}"; }
+api_client_version() { printf '%s\n' "${SMOKE_CLIENT_VERSION:-dev}"; }
 
 smoke_api_get() {
   local endpoint="$1"
@@ -278,9 +278,11 @@ server_snapshot() {
 binary_path() { printf '%s/test/smoke/.bin/go-fast-note-sync' "${REPO_ROOT}"; }
 
 build_binary() {
-  local out; out="$(binary_path)"
+  local out version
+  out="$(binary_path)"
+  version="${SMOKE_BINARY_VERSION:-dev}"
   mkdir -p "$(dirname "$out")"
-  ( cd "${REPO_ROOT}" && go build -o "$out" ./cmd ) || die "go build failed"
+  ( cd "${REPO_ROOT}" && go build -ldflags "-X main.cliVersion=${version}" -o "$out" ./cmd ) || die "go build failed"
   printf '%s\n' "$out"
 }
 

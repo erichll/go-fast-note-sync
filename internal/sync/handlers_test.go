@@ -2,6 +2,7 @@ package sync
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -117,6 +118,56 @@ func TestHandleFolderSyncModify_BadJSON(t *testing.T) {
 	handleFolderSyncModify(json.RawMessage(`bad`), svc)
 	if svc.folderSyncTasks.Completed != before+1 {
 		t.Error("Completed should be incremented even on parse error")
+	}
+}
+
+func TestSendFolderModify_PersistsSnapshotForRestart(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: dir}, nil, statePath)
+	svc.conn = newFakeWSConn()
+
+	if err := svc.SendFolderModify("new-folder"); err != nil {
+		t.Fatalf("SendFolderModify: %v", err)
+	}
+
+	loaded, err := state.Load(statePath)
+	if err != nil {
+		t.Fatalf("Load persisted state: %v", err)
+	}
+	mtime, ok := loaded.FolderSnapshot["new-folder"]
+	if !ok || mtime == 0 {
+		t.Fatalf("persisted FolderSnapshot = %#v, want non-zero new-folder entry", loaded.FolderSnapshot)
+	}
+}
+
+func TestSendFolderModify_SendFailureDoesNotCommitSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: dir}, nil, statePath)
+	conn := newFakeWSConn()
+	conn.writeErr = errors.New("write failed")
+	svc.conn = conn
+
+	if err := svc.SendFolderModify("new-folder"); err == nil {
+		t.Fatal("SendFolderModify should return the websocket write error")
+	}
+	if _, ok := svc.st.FolderSnapshot["new-folder"]; ok {
+		t.Fatal("failed send committed an in-memory folder snapshot")
+	}
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Fatalf("failed send wrote state file: %v", err)
+	}
+}
+
+func TestSendFolderModify_SaveFailureIsReturned(t *testing.T) {
+	dir := t.TempDir()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: dir}, nil, dir)
+	svc.conn = newFakeWSConn()
+
+	err := svc.SendFolderModify("new-folder")
+	if err == nil || !strings.Contains(err.Error(), "save folder snapshot") {
+		t.Fatalf("SendFolderModify error = %v, want state save error", err)
 	}
 }
 

@@ -731,18 +731,22 @@ func (s *SyncService) SendFolderModify(raw string) error {
 	if s.isFolderPathExcluded(rp.Rel) {
 		return fmt.Errorf("folder excluded: %s", rp.Rel)
 	}
+	now := time.Now().UnixMilli()
 	payload := map[string]interface{}{
 		"vault":    s.cfg.Vault,
 		"path":     rp.Rel,
 		"pathHash": h.Path(rp.Rel),
-		"mtime":    time.Now().UnixMilli(),
+		"mtime":    now,
 	}
 	if err := s.Send("FolderModify", payload); err != nil {
 		return err
 	}
 	s.mu.Lock()
-	s.st.FolderSnapshot[rp.Rel] = time.Now().UnixMilli()
+	s.st.FolderSnapshot[rp.Rel] = now
 	s.mu.Unlock()
+	if err := s.saveState(); err != nil {
+		return fmt.Errorf("save folder snapshot after FolderModify: %w", err)
+	}
 	return nil
 }
 

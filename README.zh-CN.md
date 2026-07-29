@@ -21,6 +21,17 @@
 - 可访问的 `fast-note-sync-service` 实例及有效的 API Token
 - Linux（主要目标平台）；其他 POSIX 系统可能可用，但未经测试
 
+## 已验证兼容性
+
+下表只列出经过项目保留的真实服务 smoke 套件验证的组合。其他版本组合可能可以工作，但项目不将其声明为已验证。
+
+| go-fast-note-sync | Obsidian 客户端协议基线 | fast-note-sync-service | 验证情况 |
+|-------------------|--------------------------|------------------------|----------|
+| `v1.1.0` | 官方客户端 `2.4.0` | `3.6.0` | 17-case 真实服务 smoke |
+| `v1.0.0` | 客户端 `2.0.15` 代际协议 | 历史记录未固定版本 | 14-case 真实服务 smoke；不声明明确服务端版本 |
+
+新部署推荐使用 `v1.1.0` 搭配服务端 `3.6.0`。
+
 ## 安装
 
 ### 从 GitHub Release 下载（推荐）
@@ -30,8 +41,9 @@
 **Linux x86-64 示例：**
 
 ```bash
-# 将 v0.x.y 替换为实际版本号
-curl -LO https://github.com/erichll/go-fast-note-sync/releases/download/v0.x.y/go-fast-note-sync_linux_amd64.tar.gz
+VERSION=v1.1.0
+curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/go-fast-note-sync_linux_amd64.tar.gz"
+curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/checksums.txt"
 tar -xzf go-fast-note-sync_linux_amd64.tar.gz
 install -m 755 go-fast-note-sync ~/.local/bin/go-fast-note-sync
 ```
@@ -51,7 +63,7 @@ sha256sum -c checksums.txt --ignore-missing
 docker pull ghcr.io/erichll/go-fast-note-sync:latest
 ```
 
-GHCR 镜像已设为公开，无需 `docker login`。将 `latest` 替换为具体版本标签（如 `v0.1.0`）可固定版本。
+GHCR 镜像已设为公开，无需 `docker login`。将 `latest` 替换为具体版本标签（如 `v1.1.0`）可固定版本。
 
 完整操作指南见 **[deploy/docker/README.md](deploy/docker/README.md)**。
 
@@ -67,7 +79,14 @@ go build -o ~/.local/bin/go-fast-note-sync ./cmd
 
 ```bash
 go-fast-note-sync --help
+go-fast-note-sync --version
 ```
+
+## 升级到 v1.1.0
+
+v1.1.0 采用官方客户端 2.4.0 和服务端 3.6.0 使用的 rolling hash 与分页同步契约。首次启动时会自动迁移旧版 state：清除不兼容的哈希缓存、pending 哈希、上传检查点、增量同步时间和首次同步标记，从而执行一次完整对账；文件夹快照和 WebSocket 连接计数会保留。
+
+配置文件无需修改。与其他同步引擎升级一样，建议先停止守护进程并备份 vault 和 state 文件，再替换二进制。
 
 ## 快速开始
 
@@ -214,7 +233,7 @@ cmd/              CLI 入口（start / status / sync / init-config）
 internal/
   config/         YAML 配置加载与默认值
   state/          原子 JSON 状态持久化
-  hash/           SHA-256 内容与路径哈希
+  hash/           与官方协议兼容的 rolling 内容/路径哈希
   local/          watcher 到 sync 的事件契约
   sync/           WebSocket 客户端、启动同步、协议处理器
   watcher/        fsnotify 文件监听集成

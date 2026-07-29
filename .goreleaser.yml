@@ -9,6 +9,8 @@ builds:
     binary: go-fast-note-sync
     env:
       - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.cliVersion={{ .Version }}
     goos:
       - linux
       - darwin

@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const cliVersion = "0.1.0-dev"
+var cliVersion = "dev"
 
 func main() {
 	if err := newRootCmd().Execute(); err != nil {
@@ -27,8 +27,9 @@ func main() {
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
-		Use:   "go-fast-note-sync",
-		Short: "Fast Note sync daemon",
+		Use:     "go-fast-note-sync",
+		Short:   "Fast Note sync daemon",
+		Version: cliVersion,
 	}
 	root.AddCommand(
 		newStartCmd(),

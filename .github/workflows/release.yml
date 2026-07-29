@@ -142,4 +142,13 @@ jobs:
               sleep 10
             done
           done
-          docker run --rm "${IMAGE}:${GITHUB_REF_NAME}" --help
+          EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
+          VERSION_OUTPUT="$(docker run --rm "${IMAGE}:${GITHUB_REF_NAME}" --version)"
+          echo "${VERSION_OUTPUT}"
+          case "${VERSION_OUTPUT}" in
+            *" ${EXPECTED_VERSION}") ;;
+            *)
+              echo "ERROR: image reports unexpected version: ${VERSION_OUTPUT}" >&2
+              exit 1
+              ;;
+          esac

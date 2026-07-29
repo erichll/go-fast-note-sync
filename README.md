@@ -21,6 +21,17 @@ A Linux/headless Go CLI daemon that syncs a local [Obsidian](https://obsidian.md
 - A reachable `fast-note-sync-service` instance with a valid API token
 - Linux (primary target); other POSIX systems may work but are untested
 
+## Verified Compatibility
+
+The table lists combinations covered by the project's retained live smoke suite. Other combinations may work, but are not claimed as verified.
+
+| go-fast-note-sync | Obsidian client protocol baseline | fast-note-sync-service | Validation |
+|-------------------|-----------------------------------|------------------------|------------|
+| `v1.1.0` | Official client `2.4.0` | `3.6.0` | 17-case live smoke suite |
+| `v1.0.0` | Client `2.0.15` generation | Not pinned in historical records | 14-case live smoke suite; no explicit server-version claim |
+
+For new deployments, use `v1.1.0` with service `3.6.0`.
+
 ## Installation
 
 ### From GitHub Release (recommended)
@@ -30,8 +41,9 @@ Download the pre-built binary for your platform from the [GitHub Releases page](
 **Linux x86-64 example:**
 
 ```bash
-# Replace v0.x.y with the release tag
-curl -LO https://github.com/erichll/go-fast-note-sync/releases/download/v0.x.y/go-fast-note-sync_linux_amd64.tar.gz
+VERSION=v1.1.0
+curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/go-fast-note-sync_linux_amd64.tar.gz"
+curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/checksums.txt"
 tar -xzf go-fast-note-sync_linux_amd64.tar.gz
 install -m 755 go-fast-note-sync ~/.local/bin/go-fast-note-sync
 ```
@@ -51,7 +63,7 @@ sha256sum -c checksums.txt --ignore-missing
 docker pull ghcr.io/erichll/go-fast-note-sync:latest
 ```
 
-The GHCR package is public — no `docker login` required. Replace `latest` with a specific tag (e.g. `v0.1.0`) for pinned deployments.
+The GHCR package is public — no `docker login` required. Replace `latest` with a specific tag (e.g. `v1.1.0`) for pinned deployments.
 
 See **[deploy/docker/README.md](deploy/docker/README.md)** for the full operator quickstart.
 
@@ -67,7 +79,14 @@ go build -o ~/.local/bin/go-fast-note-sync ./cmd
 
 ```bash
 go-fast-note-sync --help
+go-fast-note-sync --version
 ```
+
+## Upgrading to v1.1.0
+
+v1.1.0 adopts the rolling-hash and paged-sync contracts used by the official client 2.4.0 and service 3.6.0. On first start, an older state file is migrated automatically: incompatible hash caches, pending hashes, upload checkpoints, incremental sync timestamps, and the initial-sync marker are reset so the daemon performs a full reconciliation. Folder snapshots and the WebSocket connection counter are retained.
+
+No configuration-file changes are required. As with any sync-engine upgrade, stop the daemon and back up the vault and state file before replacing the binary.
 
 ## Quick Start
 
@@ -214,7 +233,7 @@ cmd/              CLI entry point (start / status / sync / init-config)
 internal/
   config/         YAML config loading and defaults
   state/          Atomic JSON state persistence
-  hash/           SHA-256 content and path hashing
+  hash/           Protocol-compatible rolling content/path hashing
   local/          Watcher-to-sync event contract
   sync/           WebSocket client, startup sync, protocol handlers
   watcher/        fsnotify watcher integration
