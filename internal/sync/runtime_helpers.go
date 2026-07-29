@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -107,19 +108,22 @@ type receiveContentMessage struct {
 	MTime       int64  `json:"mtime"`
 	Size        int64  `json:"size"`
 	LastTime    int64  `json:"lastTime"`
+	PageIndex   *int   `json:"pageIndex,omitempty"`
 }
 
 type receivePathMessage struct {
-	Path     string `json:"path"`
-	PathHash string `json:"pathHash"`
-	LastTime int64  `json:"lastTime"`
+	Path      string `json:"path"`
+	PathHash  string `json:"pathHash"`
+	LastTime  int64  `json:"lastTime"`
+	PageIndex *int   `json:"pageIndex,omitempty"`
 }
 
 type receiveMtimeMessage struct {
-	Path     string `json:"path"`
-	CTime    int64  `json:"ctime"`
-	MTime    int64  `json:"mtime"`
-	LastTime int64  `json:"lastTime"`
+	Path      string `json:"path"`
+	CTime     int64  `json:"ctime"`
+	MTime     int64  `json:"mtime"`
+	LastTime  int64  `json:"lastTime"`
+	PageIndex *int   `json:"pageIndex,omitempty"`
 }
 
 type receiveRenameMessage struct {
@@ -132,6 +136,7 @@ type receiveRenameMessage struct {
 	MTime       int64  `json:"mtime"`
 	Size        int64  `json:"size"`
 	LastTime    int64  `json:"lastTime"`
+	PageIndex   *int   `json:"pageIndex,omitempty"`
 }
 
 func normalizeSyncPath(raw string) (string, error) {
@@ -324,8 +329,11 @@ func (s *SyncService) updateSyncTime(module string, lastTime int64) {
 }
 
 func (s *SyncService) incrementCompleted(module string) {
+	s.incrementCompletedPage(module, nil)
+}
+
+func (s *SyncService) incrementCompletedPage(module string, pageIndex *int) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	switch module {
 	case "note":
 		s.noteSyncTasks.Completed++
@@ -335,6 +343,153 @@ func (s *SyncService) incrementCompleted(module string) {
 		s.configSyncTasks.Completed++
 	case "folder":
 		s.folderSyncTasks.Completed++
+	}
+	action, payload, send := s.completeSyncPageLocked(module, pageIndex)
+	s.mu.Unlock()
+	if send {
+		if err := s.Send(action, payload); err != nil {
+			log.Printf("[sync] send %s: %v", action, err)
+		} else {
+			log.Printf("[sync] sent %s pageIndex=%v context=%q", action, payload["pageIndex"], payload["context"])
+		}
+	}
+}
+
+func (s *SyncService) completeSyncPage(module string, pageIndex *int) {
+	s.mu.Lock()
+	action, payload, send := s.completeSyncPageLocked(module, pageIndex)
+	s.mu.Unlock()
+	if send {
+		if err := s.Send(action, payload); err != nil {
+			log.Printf("[sync] send %s: %v", action, err)
+		} else {
+			log.Printf("[sync] sent %s pageIndex=%v context=%q", action, payload["pageIndex"], payload["context"])
+		}
+	}
+}
+
+func (s *SyncService) startSyncPaging(module, context string) {
+	s.mu.Lock()
+	total := s.syncTaskTotalLocked(module)
+	if total == 0 {
+		s.mu.Unlock()
+		return
+	}
+	tracker := &syncPageTracker{Context: context, Pages: make(map[int]*syncPage)}
+	s.syncPages[module] = tracker
+	action := syncPageAckAction(module)
+	payload := map[string]interface{}{"context": context, "vault": s.cfg.Vault, "pageIndex": -1}
+	s.mu.Unlock()
+	if err := s.Send(action, payload); err != nil {
+		log.Printf("[sync] send %s: %v", action, err)
+	} else {
+		log.Printf("[sync] sent %s pageIndex=-1 context=%q", action, context)
+	}
+}
+
+func (s *SyncService) handleSyncPage(module string, env Envelope) {
+	var pageData struct {
+		PageIndex  *int `json:"pageIndex"`
+		TotalCount int  `json:"totalCount"`
+		IsLast     bool `json:"isLast"`
+	}
+	if err := json.Unmarshal(env.Data, &pageData); err != nil {
+		log.Printf("[sync] parse %s page: %v", module, err)
+		return
+	}
+	s.mu.Lock()
+	tracker := s.syncPages[module]
+	if tracker == nil {
+		tracker = &syncPageTracker{Context: env.Context, Pages: make(map[int]*syncPage)}
+		s.syncPages[module] = tracker
+	}
+	if env.Context != "" {
+		tracker.Context = env.Context
+	}
+	pageIndex := env.PageIndex
+	if pageData.PageIndex != nil {
+		pageIndex = *pageData.PageIndex
+	}
+	if _, exists := tracker.Pages[pageIndex]; !exists {
+		tracker.Pages[pageIndex] = &syncPage{TotalCount: pageData.TotalCount, IsLast: pageData.IsLast}
+		log.Printf("[sync] registered %s page=%d total=%d last=%t context=%q", module, pageIndex, pageData.TotalCount, pageData.IsLast, tracker.Context)
+	}
+	action, payload, send := s.advanceSyncPageAckLocked(module, tracker)
+	s.mu.Unlock()
+	if send {
+		if err := s.Send(action, payload); err != nil {
+			log.Printf("[sync] send %s: %v", action, err)
+		} else {
+			log.Printf("[sync] sent %s pageIndex=%d context=%q", action, payload["pageIndex"], payload["context"])
+		}
+	}
+}
+
+func (s *SyncService) completeSyncPageLocked(module string, pageIndex *int) (string, map[string]interface{}, bool) {
+	if pageIndex == nil {
+		return "", nil, false
+	}
+	tracker := s.syncPages[module]
+	if tracker == nil {
+		return "", nil, false
+	}
+	page := tracker.Pages[*pageIndex]
+	if page == nil || page.CompletedCount >= page.TotalCount {
+		return "", nil, false
+	}
+	page.CompletedCount++
+	if page.CompletedCount == page.TotalCount {
+		log.Printf("[sync] completed %s page=%d total=%d last=%t", module, *pageIndex, page.TotalCount, page.IsLast)
+	}
+	return s.advanceSyncPageAckLocked(module, tracker)
+}
+
+func (s *SyncService) advanceSyncPageAckLocked(module string, tracker *syncPageTracker) (string, map[string]interface{}, bool) {
+	highest := -1
+	for {
+		page := tracker.Pages[tracker.AckWatermark]
+		if page == nil || page.IsLast || page.CompletedCount < page.TotalCount {
+			break
+		}
+		highest = tracker.AckWatermark
+		delete(tracker.Pages, tracker.AckWatermark)
+		tracker.AckWatermark++
+	}
+	if highest < 0 {
+		return "", nil, false
+	}
+	return syncPageAckAction(module), map[string]interface{}{
+		"context": tracker.Context, "vault": s.cfg.Vault, "pageIndex": highest,
+	}, true
+}
+
+func (s *SyncService) syncTaskTotalLocked(module string) int {
+	var tasks SyncTaskCounter
+	switch module {
+	case "note":
+		tasks = s.noteSyncTasks
+	case "file":
+		tasks = s.fileSyncTasks
+	case "config":
+		tasks = s.configSyncTasks
+	case "folder":
+		tasks = s.folderSyncTasks
+	}
+	return tasks.NeedUpload + tasks.NeedModify + tasks.NeedSyncMtime + tasks.NeedDelete
+}
+
+func syncPageAckAction(module string) string {
+	switch module {
+	case "note":
+		return "NoteSyncPageAck"
+	case "file":
+		return "FileSyncPageAck"
+	case "config":
+		return "SettingSyncPageAck"
+	case "folder":
+		return "FolderSyncPageAck"
+	default:
+		return ""
 	}
 }
 
@@ -398,7 +553,7 @@ func (s *SyncService) sendFileContentModify(action string, rp resolvedPath, pend
 	if err != nil {
 		return err
 	}
-	hash := h.Content(content)
+	hash := h.Text(string(content))
 	info, err := os.Stat(rp.Abs)
 	if err != nil {
 		return err
@@ -445,7 +600,11 @@ func (s *SyncService) sendRename(action, oldRaw, newRaw string, pending func(str
 	}
 	contentHash := ""
 	if b, readErr := os.ReadFile(newRP.Abs); readErr == nil {
-		contentHash = h.Content(b)
+		if action == "FileRename" {
+			contentHash = h.Content(b)
+		} else {
+			contentHash = h.Text(string(b))
+		}
 	} else {
 		s.mu.Lock()
 		if entry, ok := s.st.FileHashMap[oldRP.Rel]; ok {

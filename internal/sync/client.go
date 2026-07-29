@@ -87,6 +87,18 @@ type SyncTaskCounter struct {
 	Completed     int
 }
 
+type syncPage struct {
+	TotalCount     int
+	CompletedCount int
+	IsLast         bool
+}
+
+type syncPageTracker struct {
+	Context      string
+	AckWatermark int
+	Pages        map[int]*syncPage
+}
+
 // SyncService manages the WebSocket connection lifecycle and sync state.
 type SyncService struct {
 	cfg       *config.Config
@@ -153,6 +165,7 @@ type SyncService struct {
 	fileSyncEnd   bool
 	configSyncEnd bool
 	folderSyncEnd bool
+	syncPages     map[string]*syncPageTracker
 
 	// echo suppression / scan caches
 	lastSyncMtime       map[string]int64
@@ -169,6 +182,7 @@ type SyncService struct {
 
 	syncDoneCh   chan struct{}
 	syncDoneOnce stdsync.Once
+	syncErr      error
 }
 
 // NewSyncService creates a SyncService with production defaults.
@@ -206,6 +220,7 @@ func NewSyncService(cfg *config.Config, st *state.State, statePath, version stri
 		scannedConfigHashes:      make(map[string]state.FileHashEntry),
 		concurrency:              NewConcurrencyManager(cfg),
 		pathLocks:                make(map[string]chan struct{}),
+		syncPages:                make(map[string]*syncPageTracker),
 		syncDoneCh:               make(chan struct{}),
 	}
 	if cfg.SyncTimeoutSeconds > 0 {
@@ -218,6 +233,12 @@ func NewSyncService(cfg *config.Config, st *state.State, statePath, version stri
 // SyncComplete returns a channel that is closed once the first sync round completes.
 func (s *SyncService) SyncComplete() <-chan struct{} {
 	return s.syncDoneCh
+}
+
+func (s *SyncService) SyncError() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.syncErr
 }
 
 // buildWSURL constructs the WebSocket connection URL.

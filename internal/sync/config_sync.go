@@ -65,7 +65,7 @@ func handleSettingSyncModify(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("config")
 		return
 	}
-	defer s.incrementCompleted("config")
+	defer s.incrementCompletedPage("config", msg.PageIndex)
 	if isLocalStorageSettingPath(msg.Path) || isSensitivePluginConfigPath(msg.Path) {
 		log.Printf("[handler] SettingSyncModify skip excluded config path %q", msg.Path)
 		return
@@ -97,7 +97,7 @@ func handleSettingSyncModify(data json.RawMessage, s *SyncService) {
 		return
 	}
 	if entry.Hash == "" {
-		entry.Hash = h.Content([]byte(msg.Content))
+		entry.Hash = h.Text(msg.Content)
 	}
 	s.mu.Lock()
 	s.st.ConfigHashMap[rp.Rel] = entry
@@ -112,25 +112,25 @@ func handleSettingSyncNeedUpload(data json.RawMessage, s *SyncService) {
 	var msg receivePathMessage
 	if err := json.Unmarshal(data, &msg); err != nil {
 		log.Printf("[handler] SettingSyncNeedUpload parse: %v", err)
-		s.incrementCompleted("config")
+		s.incrementCompletedPage("config", msg.PageIndex)
 		return
 	}
 	if isLocalStorageSettingPath(msg.Path) || isSensitivePluginConfigPath(msg.Path) {
 		log.Printf("[handler] SettingSyncNeedUpload skip excluded config path %q", msg.Path)
-		s.incrementCompleted("config")
+		s.incrementCompletedPage("config", msg.PageIndex)
 		return
 	}
 	s.updateSyncTime("config", msg.LastTime)
 	rp, err := s.resolveVaultPath(msg.Path)
 	if err != nil || s.cfg.ReadOnlySyncEnabled || !s.isConfigSyncPathAllowed(rp.Rel) {
-		s.incrementCompleted("config")
+		s.incrementCompletedPage("config", msg.PageIndex)
 		return
 	}
 	if _, err := os.Stat(rp.Abs); err != nil {
-		s.incrementCompleted("config")
+		s.incrementCompletedPage("config", msg.PageIndex)
 		return
 	}
-	if err := s.sendFileContentModify("SettingModify", rp, s.setPendingConfigModify, func() { s.incrementCompleted("config") }); err != nil {
+	if err := s.sendFileContentModify("SettingModify", rp, s.setPendingConfigModify, func() { s.incrementCompletedPage("config", msg.PageIndex) }); err != nil {
 		log.Printf("[handler] SettingSyncNeedUpload send %q: %v", rp.Rel, err)
 	}
 }
@@ -142,7 +142,7 @@ func handleSettingSyncMtime(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("config")
 		return
 	}
-	defer s.incrementCompleted("config")
+	defer s.incrementCompletedPage("config", msg.PageIndex)
 	if isLocalStorageSettingPath(msg.Path) || isSensitivePluginConfigPath(msg.Path) {
 		return
 	}
@@ -181,7 +181,7 @@ func handleSettingSyncDelete(data json.RawMessage, s *SyncService) {
 		s.incrementCompleted("config")
 		return
 	}
-	defer s.incrementCompleted("config")
+	defer s.incrementCompletedPage("config", msg.PageIndex)
 	if isLocalStorageSettingPath(msg.Path) || isSensitivePluginConfigPath(msg.Path) {
 		return
 	}
@@ -206,11 +206,13 @@ func handleSettingSyncDelete(data json.RawMessage, s *SyncService) {
 	s.saveStateLog("SettingSyncDelete")
 }
 
-func handleSettingSyncClear(_ json.RawMessage, s *SyncService) {
+func handleSettingSyncClear(data json.RawMessage, s *SyncService) {
+	var msg receivePathMessage
+	_ = json.Unmarshal(data, &msg)
 	s.mu.Lock()
 	s.st.ConfigSyncTime = 0
-	s.configSyncTasks.Completed++
 	s.mu.Unlock()
+	s.incrementCompletedPage("config", msg.PageIndex)
 	s.saveStateLog("SettingSyncClear")
 }
 

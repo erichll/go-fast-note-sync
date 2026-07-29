@@ -465,11 +465,17 @@ func TestHandleFileUploadSendFailureKeepsActiveUploadForTimeout(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "fail.bin"), []byte("abcdef"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	pageIndex := 0
+	svc.syncPages["file"] = &syncPageTracker{
+		Context: "ctx",
+		Pages:   map[int]*syncPage{0: {TotalCount: 1}},
+	}
 	msg, _ := json.Marshal(fileUploadMessage{
 		Path:      "fail.bin",
 		PathHash:  h.Path("fail.bin"),
 		SessionID: testSessionID,
 		ChunkSize: 3,
+		PageIndex: &pageIndex,
 	})
 	handleFileUpload(msg, svc)
 	waitFor(t, func() bool {
@@ -484,6 +490,14 @@ func TestHandleFileUploadSendFailureKeepsActiveUploadForTimeout(t *testing.T) {
 	svc.mu.Unlock()
 	if completed != 0 || !active {
 		t.Fatalf("send failure completed=%d active=%v, want completed 0 and active true", completed, active)
+	}
+	svc.mu.Lock()
+	tracker := svc.syncPages["file"]
+	watermark := tracker.AckWatermark
+	remainingPages := len(tracker.Pages)
+	svc.mu.Unlock()
+	if watermark != 1 || remainingPages != 0 {
+		t.Fatalf("send failure page state = watermark %d, pages %d; want 1/0", watermark, remainingPages)
 	}
 }
 

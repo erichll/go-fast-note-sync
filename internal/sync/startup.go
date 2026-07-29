@@ -130,18 +130,14 @@ func (s *SyncService) handleSync(isLoadLastTime bool) {
 	s.fileSyncTasks = SyncTaskCounter{}
 	s.configSyncTasks = SyncTaskCounter{}
 	s.folderSyncTasks = SyncTaskCounter{}
+	s.syncPages = make(map[string]*syncPageTracker)
 	s.mu.Unlock()
 
 	go func() {
-		defer func() {
-			s.mu.Lock()
-			s.isSyncing = false
-			s.mu.Unlock()
-		}()
-
 		result, err := s.scanVault(isLoadLastTime)
 		if err != nil {
 			log.Printf("[sync] vault scan failed: %v", err)
+			s.onSyncFailed(fmt.Errorf("scan vault: %w", err))
 			return
 		}
 
@@ -215,7 +211,7 @@ func (s *SyncService) sendSyncRequests(result *scanResult, context string, isLoa
 	// Step 3: NoteSync
 	if err := s.Send("NoteSync", buildNoteSyncPayload(s.cfg.Vault, lastNoteTime, context, result, s.cfg.OfflineDeleteSyncEnabled)); err != nil {
 		log.Printf("[sync] send NoteSync: %v", err)
-	} else {
+	} else if !s.cfg.ReadOnlySyncEnabled {
 		s.mu.Lock()
 		for _, n := range result.notes {
 			s.pendingNoteModifies[n.Path] = n.ContentHash
@@ -247,7 +243,7 @@ func (s *SyncService) sendSyncRequests(result *scanResult, context string, isLoa
 	if s.cfg.ConfigSyncEnabled {
 		if err := s.Send("SettingSync", buildSettingSyncPayload(s.cfg.Vault, lastConfigTime, context, result, s.cfg.OfflineDeleteSyncEnabled)); err != nil {
 			log.Printf("[sync] send SettingSync: %v", err)
-		} else {
+		} else if !s.cfg.ReadOnlySyncEnabled {
 			s.mu.Lock()
 			for _, c := range result.configs {
 				s.pendingConfigModifies[c.Path] = c.ContentHash
@@ -350,22 +346,60 @@ func (s *SyncService) runCheckSyncCompletion(wasInitSync bool) {
 	if timeout == 0 {
 		timeout = 30 * time.Second
 	}
-	deadline := time.Now().Add(timeout)
+	lastProgress := s.syncProgressSnapshot()
+	lastProgressAt := time.Now()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for range ticker.C {
-		done := s.isSyncComplete()
-		if done || time.Now().After(deadline) {
-			if !done {
-				log.Printf("[sync] checkSyncCompletion: timeout, forcing completion")
-				s.cleanupActiveFileTransfersOnTimeout()
-			} else {
-				log.Printf("[sync] checkSyncCompletion: sync complete")
-			}
+		if s.isSyncComplete() {
+			log.Printf("[sync] checkSyncCompletion: sync complete")
 			s.onSyncComplete(wasInitSync)
 			return
 		}
+		progress := s.syncProgressSnapshot()
+		if progress != lastProgress {
+			lastProgress = progress
+			lastProgressAt = time.Now()
+			continue
+		}
+		if time.Since(lastProgressAt) >= timeout {
+			log.Printf("[sync] checkSyncCompletion: no progress for %v", timeout)
+			s.cleanupActiveFileTransfersOnTimeout()
+			s.onSyncFailed(fmt.Errorf("sync made no progress for %v", timeout))
+			return
+		}
 	}
+}
+
+type syncProgress struct {
+	tasks          [4]SyncTaskCounter
+	endFlags       [4]bool
+	pageCount      int
+	pageCompleted  int
+	downloads      int
+	receivedChunks int
+	uploads        int
+}
+
+func (s *SyncService) syncProgressSnapshot() syncProgress {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	progress := syncProgress{
+		tasks:     [4]SyncTaskCounter{s.noteSyncTasks, s.fileSyncTasks, s.configSyncTasks, s.folderSyncTasks},
+		endFlags:  [4]bool{s.noteSyncEnd, s.fileSyncEnd, s.configSyncEnd, s.folderSyncEnd},
+		downloads: len(s.fileDownloadSessions),
+		uploads:   len(s.activeUploads),
+	}
+	for _, tracker := range s.syncPages {
+		progress.pageCount += len(tracker.Pages)
+		for _, page := range tracker.Pages {
+			progress.pageCompleted += page.CompletedCount
+		}
+	}
+	for _, session := range s.fileDownloadSessions {
+		progress.receivedChunks += len(session.Received)
+	}
+	return progress
 }
 
 // isSyncComplete returns true when all sync modules have finished.
@@ -424,6 +458,10 @@ func (s *SyncService) cleanupActiveFileTransfersOnTimeout() {
 // onSyncComplete finalizes the sync round: persists IsInitSync when this was the first sync.
 func (s *SyncService) onSyncComplete(wasInitSync bool) {
 	log.Printf("[sync] sync round complete (wasInitSync=%v)", wasInitSync)
+	s.mu.Lock()
+	s.isSyncing = false
+	s.syncErr = nil
+	s.mu.Unlock()
 	if !wasInitSync {
 		s.mu.Lock()
 		s.st.IsInitSync = true
@@ -432,6 +470,14 @@ func (s *SyncService) onSyncComplete(wasInitSync bool) {
 			log.Printf("[sync] persist IsInitSync: %v", err)
 		}
 	}
+	s.syncDoneOnce.Do(func() { close(s.syncDoneCh) })
+}
+
+func (s *SyncService) onSyncFailed(err error) {
+	s.mu.Lock()
+	s.isSyncing = false
+	s.syncErr = err
+	s.mu.Unlock()
 	s.syncDoneOnce.Do(func() { close(s.syncDoneCh) })
 }
 
@@ -532,7 +578,7 @@ func (s *SyncService) scanVault(isLoadLastTime bool) (*scanResult, error) {
 					}
 				}
 			}
-			contentHash, fromCache, hashErr := h.FileCached(absPath, fileHashMapToCache(fileHashMap[relPath]))
+			contentHash, fromCache, hashErr := h.TextFileCached(absPath, fileHashMapToCache(fileHashMap[relPath]))
 			if hashErr != nil {
 				log.Printf("[scan] hash note %q: %v", relPath, hashErr)
 				return nil
@@ -699,7 +745,7 @@ func (s *SyncService) scanConfigs(vaultPath string, configHashMap map[string]sta
 			}
 		}
 
-		contentHash, fromCache, hashErr := h.FileCached(absPath, fileHashMapToCache(configHashMap[relPath]))
+		contentHash, fromCache, hashErr := h.TextFileCached(absPath, fileHashMapToCache(configHashMap[relPath]))
 		if hashErr != nil {
 			log.Printf("[scan] hash config %q: %v", relPath, hashErr)
 			return

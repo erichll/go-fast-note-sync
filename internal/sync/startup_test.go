@@ -320,6 +320,7 @@ func TestHandleSync_ResetsFlags(t *testing.T) {
 	svc.noteSyncEnd = true
 	svc.fileSyncEnd = true
 	svc.noteSyncTasks = SyncTaskCounter{Completed: 5}
+	svc.syncPages["note"] = &syncPageTracker{Context: "stale", Pages: map[int]*syncPage{0: {TotalCount: 1}}}
 	svc.handleSync(false)
 	time.Sleep(20 * time.Millisecond)
 	svc.mu.Lock()
@@ -328,6 +329,9 @@ func TestHandleSync_ResetsFlags(t *testing.T) {
 	}
 	if svc.noteSyncTasks.Completed != 0 {
 		t.Error("noteSyncTasks should be reset by handleSync")
+	}
+	if len(svc.syncPages) != 0 {
+		t.Errorf("syncPages should be reset by handleSync: %+v", svc.syncPages)
 	}
 	svc.mu.Unlock()
 }
@@ -563,9 +567,9 @@ func TestSaveState_WritesAndLoads(t *testing.T) {
 	}
 }
 
-// ---- checkSyncCompletion timeout → onSyncComplete ----
+// ---- checkSyncCompletion lifecycle ----
 
-func TestRunCheckSyncCompletion_TimeoutSetsIsInitSync(t *testing.T) {
+func TestRunCheckSyncCompletion_TimeoutDoesNotSetIsInitSync(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
 	st := state.New()
@@ -573,15 +577,41 @@ func TestRunCheckSyncCompletion_TimeoutSetsIsInitSync(t *testing.T) {
 	svc.statePath = statePath
 	svc.syncTimeout = 30 * time.Millisecond
 
-	// All SyncEnd flags false → never complete → timeout fires onSyncComplete(false)
 	svc.runCheckSyncCompletion(false)
 
-	loaded, err := state.Load(statePath)
-	if err != nil {
-		t.Fatalf("state.Load: %v", err)
+	if svc.st.IsInitSync {
+		t.Error("timeout must not mark initial sync complete")
 	}
-	if !loaded.IsInitSync {
-		t.Error("IsInitSync should be true after timeout with wasInitSync=false")
+	if svc.SyncError() == nil {
+		t.Error("timeout must report a sync error")
+	}
+}
+
+func TestRunCheckSyncCompletion_ProgressExtendsTimeout(t *testing.T) {
+	svc := newTestService(nil, nil, "")
+	svc.syncTimeout = 300 * time.Millisecond
+	svc.noteSyncEnd = true
+	svc.noteSyncTasks.NeedModify = 2
+	svc.fileSyncEnd = true
+	svc.folderSyncEnd = true
+
+	done := make(chan struct{})
+	go func() {
+		svc.runCheckSyncCompletion(true)
+		close(done)
+	}()
+	time.Sleep(150 * time.Millisecond)
+	svc.incrementCompleted("note")
+	time.Sleep(300 * time.Millisecond)
+	svc.incrementCompleted("note")
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("progressing sync did not complete")
+	}
+	if err := svc.SyncError(); err != nil {
+		t.Fatalf("progressing sync timed out: %v", err)
 	}
 }
 
@@ -1244,6 +1274,26 @@ func TestSendSyncRequests_PopulatesPendingModifies(t *testing.T) {
 	}
 	if got := svc.pendingConfigModifies[".obsidian/app.json"]; got != "ch-cfg" {
 		t.Errorf("pendingConfigModifies = %q, want ch-cfg", got)
+	}
+}
+
+func TestSendSyncRequests_ReadOnlyDoesNotPopulatePendingModifies(t *testing.T) {
+	cfg := &config.Config{Vault: "V", ConfigSyncEnabled: true, ReadOnlySyncEnabled: true}
+	svc := newTestService(cfg, nil, "")
+	svc.conn = &fakeWSConn{}
+	svc.folderSyncEnd = true
+
+	r := newScanResult()
+	r.notes = []SnapFile{{Path: "a.md", PathHash: "p", ContentHash: "ch-note"}}
+	r.configs = []SnapFile{{Path: ".obsidian/app.json", PathHash: "p", ContentHash: "ch-cfg"}}
+
+	svc.sendSyncRequests(r, "ctx", false)
+
+	if len(svc.pendingNoteModifies) != 0 || len(svc.st.PendingNoteModifies) != 0 {
+		t.Fatalf("read-only note pending maps = %v / %v, want empty", svc.pendingNoteModifies, svc.st.PendingNoteModifies)
+	}
+	if len(svc.pendingConfigModifies) != 0 || len(svc.st.PendingConfigModifies) != 0 {
+		t.Fatalf("read-only config pending maps = %v / %v, want empty", svc.pendingConfigModifies, svc.st.PendingConfigModifies)
 	}
 }
 
