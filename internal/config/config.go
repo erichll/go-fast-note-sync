@@ -70,7 +70,7 @@ func Default() *Config {
 		OfflineDeleteSyncEnabled:  false,
 		ReadOnlySyncEnabled:       false,
 		ManualSyncEnabled:         false,
-		OfflineSyncStrategy:       "auto",
+		OfflineSyncStrategy:       "newTimeMerge",
 		SyncUpdateDelay:           500,
 		BinarySyncLimitEnabled:    true,
 		ConcurrencyControlEnabled: true,
@@ -117,7 +117,27 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
+	if err := validateOfflineSyncStrategy(cfg.OfflineSyncStrategy); err != nil {
+		return nil, fmt.Errorf("config %s: %w", path, err)
+	}
 	return &cfg, nil
+}
+
+// validateOfflineSyncStrategy rejects any strategy the sync service does not
+// recognize.
+//
+// The server picks its conflict-handling behaviour by matching this value, which
+// the client reports in ClientInfo. An unrecognized value matches none of those
+// branches and is not reported as an error: the server simply skips conflict
+// detection and merging, and the client's content overwrites whatever is stored.
+// Failing here keeps a typo from silently turning off data protection.
+func validateOfflineSyncStrategy(strategy string) error {
+	switch strategy {
+	case "", "manualMerge", "ignoreTimeMerge", "newTimeMerge":
+		return nil
+	}
+	return fmt.Errorf("offline_sync_strategy %q is not recognized by the sync service; "+
+		"valid values are manualMerge, ignoreTimeMerge, newTimeMerge", strategy)
 }
 
 // envRefRegexp matches ${VAR} references where VAR is a POSIX-shell-like identifier.

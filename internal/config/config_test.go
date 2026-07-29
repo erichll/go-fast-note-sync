@@ -15,8 +15,8 @@ func TestDefault(t *testing.T) {
 	if d.ClientType != DefaultClientType {
 		t.Errorf("Default().ClientType = %q, want DefaultClientType %q", d.ClientType, DefaultClientType)
 	}
-	if d.OfflineSyncStrategy != "auto" {
-		t.Errorf("expected offline_sync_strategy=auto, got %q", d.OfflineSyncStrategy)
+	if d.OfflineSyncStrategy != "newTimeMerge" {
+		t.Errorf("expected offline_sync_strategy=newTimeMerge, got %q", d.OfflineSyncStrategy)
 	}
 	if d.SyncUpdateDelay != 500 {
 		t.Errorf("expected sync_update_delay=500, got %d", d.SyncUpdateDelay)
@@ -62,8 +62,8 @@ func TestWriteDefaultAndLoad(t *testing.T) {
 	if cfg.ClientType != DefaultClientType {
 		t.Errorf("client_type round-trip: got %q, want %q", cfg.ClientType, DefaultClientType)
 	}
-	if cfg.OfflineSyncStrategy != "auto" {
-		t.Errorf("expected auto, got %q", cfg.OfflineSyncStrategy)
+	if cfg.OfflineSyncStrategy != "newTimeMerge" {
+		t.Errorf("expected newTimeMerge, got %q", cfg.OfflineSyncStrategy)
 	}
 	if cfg.SyncUpdateDelay != 500 {
 		t.Errorf("expected 500, got %d", cfg.SyncUpdateDelay)
@@ -127,7 +127,7 @@ max_concurrent_uploads: 5
 	if cfg.ClientType != DefaultClientType {
 		t.Errorf("client_type default: got %q, want %q", cfg.ClientType, DefaultClientType)
 	}
-	if cfg.OfflineSyncStrategy != "auto" {
+	if cfg.OfflineSyncStrategy != "newTimeMerge" {
 		t.Errorf("offline_sync_strategy default: got %q", cfg.OfflineSyncStrategy)
 	}
 }
