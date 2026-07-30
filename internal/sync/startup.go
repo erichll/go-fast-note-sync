@@ -121,7 +121,16 @@ func (s *SyncService) handleSync(isLoadLastTime bool) {
 		log.Printf("[sync] handleSync: manual sync mode, skipping auto-trigger")
 		return
 	}
+	// A queued overflow recovery must always full-scan, even when auth would
+	// otherwise start an incremental round.
+	if s.overflowRescanPending {
+		isLoadLastTime = false
+		s.overflowRescanPending = false
+	}
 	s.isSyncing = true
+	s.syncRoundID++
+	roundID := s.syncRoundID
+	s.syncRoundConn = s.conn
 	s.noteSyncEnd = false
 	s.fileSyncEnd = false
 	s.configSyncEnd = false
@@ -137,7 +146,10 @@ func (s *SyncService) handleSync(isLoadLastTime bool) {
 		result, err := s.scanVault(isLoadLastTime)
 		if err != nil {
 			log.Printf("[sync] vault scan failed: %v", err)
-			s.onSyncFailed(fmt.Errorf("scan vault: %w", err))
+			s.onSyncFailed(roundID, fmt.Errorf("scan vault: %w", err))
+			return
+		}
+		if !s.ownsSyncRound(roundID) {
 			return
 		}
 
@@ -149,18 +161,27 @@ func (s *SyncService) handleSync(isLoadLastTime bool) {
 		s.mu.Unlock()
 
 		context := newUUID()
-		s.sendSyncRequests(result, context, isLoadLastTime)
+		s.sendSyncRequests(roundID, result, context, isLoadLastTime)
+
+		if !s.ownsSyncRound(roundID) {
+			return
+		}
 
 		s.mu.Lock()
 		s.isSyncRequesting = false
 		s.mu.Unlock()
 
-		go s.runCheckSyncCompletion(isLoadLastTime)
+		go s.runCheckSyncCompletion(roundID, isLoadLastTime)
 	}()
 }
 
 // sendSyncRequests sends FolderSync first, waits for folderSyncDone, then Note/File/Setting.
-func (s *SyncService) sendSyncRequests(result *scanResult, context string, isLoadLastTime bool) {
+// roundID aborts the pipeline if the owning connection/round is superseded mid-flight
+// (for example after a debug disconnect or stall reconnect).
+func (s *SyncService) sendSyncRequests(roundID uint64, result *scanResult, context string, isLoadLastTime bool) {
+	if !s.ownsSyncRound(roundID) {
+		return
+	}
 	s.mu.Lock()
 	lastFolderTime := int64(0)
 	lastNoteTime := int64(0)
@@ -177,7 +198,7 @@ func (s *SyncService) sendSyncRequests(result *scanResult, context string, isLoa
 	// Step 1: FolderSync first
 	if err := s.Send("FolderSync", buildFolderSyncPayload(s.cfg.Vault, lastFolderTime, context, result, s.cfg.OfflineDeleteSyncEnabled)); err != nil {
 		log.Printf("[sync] send FolderSync: %v", err)
-	} else {
+	} else if s.ownsSyncRound(roundID) {
 		now := time.Now().UnixMilli()
 		s.mu.Lock()
 		for _, f := range result.folders {
@@ -202,16 +223,22 @@ func (s *SyncService) sendSyncRequests(result *scanResult, context string, isLoa
 	}
 	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
+		if !s.ownsSyncRound(roundID) {
+			return
+		}
 		if s.folderSyncDone() {
 			break
 		}
 		time.Sleep(poll)
 	}
+	if !s.ownsSyncRound(roundID) {
+		return
+	}
 
 	// Step 3: NoteSync
 	if err := s.Send("NoteSync", buildNoteSyncPayload(s.cfg.Vault, lastNoteTime, context, result, s.cfg.OfflineDeleteSyncEnabled)); err != nil {
 		log.Printf("[sync] send NoteSync: %v", err)
-	} else if !s.cfg.ReadOnlySyncEnabled {
+	} else if s.ownsSyncRound(roundID) && !s.cfg.ReadOnlySyncEnabled {
 		s.mu.Lock()
 		for _, n := range result.notes {
 			s.pendingNoteModifies[n.Path] = n.ContentHash
@@ -227,23 +254,29 @@ func (s *SyncService) sendSyncRequests(result *scanResult, context string, isLoa
 			log.Printf("[sync] save state after NoteSync: %v", err)
 		}
 	}
+	if !s.ownsSyncRound(roundID) {
+		return
+	}
 
 	// Step 4: FileSync
 	if err := s.Send("FileSync", buildFileSyncPayload(s.cfg.Vault, lastFileTime, context, result, s.cfg.OfflineDeleteSyncEnabled)); err != nil {
 		log.Printf("[sync] send FileSync: %v", err)
-	} else if s.cfg.OfflineDeleteSyncEnabled {
+	} else if s.ownsSyncRound(roundID) && s.cfg.OfflineDeleteSyncEnabled {
 		s.mu.Lock()
 		for _, d := range result.delFiles {
 			s.pendingDeleteFilePaths[d.Path] = struct{}{}
 		}
 		s.mu.Unlock()
 	}
+	if !s.ownsSyncRound(roundID) {
+		return
+	}
 
 	// Step 5: SettingSync (independent of FolderSync wait)
 	if s.cfg.ConfigSyncEnabled {
 		if err := s.Send("SettingSync", buildSettingSyncPayload(s.cfg.Vault, lastConfigTime, context, result, s.cfg.OfflineDeleteSyncEnabled)); err != nil {
 			log.Printf("[sync] send SettingSync: %v", err)
-		} else if !s.cfg.ReadOnlySyncEnabled {
+		} else if s.ownsSyncRound(roundID) && !s.cfg.ReadOnlySyncEnabled {
 			s.mu.Lock()
 			for _, c := range result.configs {
 				s.pendingConfigModifies[c.Path] = c.ContentHash
@@ -341,7 +374,9 @@ func (s *SyncService) folderSyncDone() bool {
 }
 
 // runCheckSyncCompletion polls for completion with a configurable timeout fallback.
-func (s *SyncService) runCheckSyncCompletion(wasInitSync bool) {
+// roundID ties this goroutine to the sync round that spawned it so a stale
+// timeout cannot close or reset a newer round.
+func (s *SyncService) runCheckSyncCompletion(roundID uint64, wasInitSync bool) {
 	timeout := s.syncTimeout
 	if timeout == 0 {
 		timeout = 30 * time.Second
@@ -351,9 +386,12 @@ func (s *SyncService) runCheckSyncCompletion(wasInitSync bool) {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 	for range ticker.C {
+		if !s.ownsSyncRound(roundID) {
+			return
+		}
 		if s.isSyncComplete() {
 			log.Printf("[sync] checkSyncCompletion: sync complete")
-			s.onSyncComplete(wasInitSync)
+			s.onSyncComplete(roundID, wasInitSync)
 			return
 		}
 		progress := s.syncProgressSnapshot()
@@ -363,29 +401,50 @@ func (s *SyncService) runCheckSyncCompletion(wasInitSync bool) {
 			continue
 		}
 		if time.Since(lastProgressAt) >= timeout {
+			if !s.ownsSyncRound(roundID) {
+				return
+			}
 			log.Printf("[sync] checkSyncCompletion: no progress for %v", timeout)
+			// Drop the owning connection before clearing round ownership so a
+			// failed state cannot prevent the reconnect path from running.
+			s.dropConnectionAfterStall(roundID)
 			s.cleanupActiveFileTransfersOnTimeout()
-			s.onSyncFailed(fmt.Errorf("sync made no progress for %v", timeout))
-			s.dropConnectionAfterStall()
+			s.onSyncFailed(roundID, fmt.Errorf("sync made no progress for %v", timeout))
 			return
 		}
 	}
 }
 
-// dropConnectionAfterStall closes the socket so readLoop unwinds into the
-// reconnect path. Only authentication and watcher overflow start a sync round,
-// so without this a stalled round leaves a healthy connection that never syncs
-// again.
-func (s *SyncService) dropConnectionAfterStall() {
+// ownsSyncRound reports whether roundID is still the active in-flight round.
+func (s *SyncService) ownsSyncRound(roundID uint64) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.isSyncing && s.syncRoundID == roundID
+}
+
+func (s *SyncService) currentSyncRoundID() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.syncRoundID
+}
+
+// dropConnectionAfterStall closes the socket owned by the stalled round so
+// readLoop unwinds into the existing reconnect path. A newer round's connection
+// is left alone.
+func (s *SyncService) dropConnectionAfterStall(roundID uint64) {
+	s.mu.Lock()
+	if s.syncRoundID != roundID || !s.isRegister {
+		s.mu.Unlock()
+		return
+	}
 	conn := s.conn
-	registered := s.isRegister
+	owned := s.syncRoundConn
 	s.mu.Unlock()
-	if conn == nil || !registered {
+	if conn == nil || owned == nil || conn != owned {
 		return
 	}
 	log.Printf("[sync] dropping connection after stall to force a fresh sync round")
-	conn.Close() //nolint:errcheck
+	_ = conn.Close()
 }
 
 type syncProgress struct {
@@ -473,11 +532,18 @@ func (s *SyncService) cleanupActiveFileTransfersOnTimeout() {
 }
 
 // onSyncComplete finalizes the sync round: persists IsInitSync when this was the first sync.
-func (s *SyncService) onSyncComplete(wasInitSync bool) {
-	log.Printf("[sync] sync round complete (wasInitSync=%v)", wasInitSync)
+func (s *SyncService) onSyncComplete(roundID uint64, wasInitSync bool) {
 	s.mu.Lock()
+	if s.syncRoundID != roundID || !s.isSyncing {
+		s.mu.Unlock()
+		return
+	}
+	log.Printf("[sync] sync round complete (wasInitSync=%v)", wasInitSync)
 	s.isSyncing = false
 	s.syncErr = nil
+	s.syncRoundConn = nil
+	pendingOverflow := s.overflowRescanPending
+	s.overflowRescanPending = false
 	s.mu.Unlock()
 	if !wasInitSync {
 		s.mu.Lock()
@@ -488,14 +554,34 @@ func (s *SyncService) onSyncComplete(wasInitSync bool) {
 		}
 	}
 	s.syncDoneOnce.Do(func() { close(s.syncDoneCh) })
+	if pendingOverflow {
+		log.Printf("[sync] watcher overflow: starting queued full re-scan")
+		go s.handleSync(false)
+	}
 }
 
-func (s *SyncService) onSyncFailed(err error) {
+func (s *SyncService) onSyncFailed(roundID uint64, err error) {
 	s.mu.Lock()
+	if s.syncRoundID != roundID || !s.isSyncing {
+		s.mu.Unlock()
+		return
+	}
 	s.isSyncing = false
 	s.syncErr = err
+	s.syncRoundConn = nil
+	pendingOverflow := s.overflowRescanPending
+	// Keep overflow pending across a failed round so reconnect/auth can force
+	// a full scan. Only clear when we will start the recovery immediately.
+	startNow := pendingOverflow && s.isRegister && s.conn != nil && s.isOpen && s.isAuth
+	if startNow {
+		s.overflowRescanPending = false
+	}
 	s.mu.Unlock()
 	s.syncDoneOnce.Do(func() { close(s.syncDoneCh) })
+	if startNow {
+		log.Printf("[sync] watcher overflow: starting queued full re-scan after failed round")
+		go s.handleSync(false)
+	}
 }
 
 // --- Vault scanning ---

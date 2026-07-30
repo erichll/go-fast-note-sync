@@ -188,6 +188,9 @@ func (s *SyncService) isConfigSyncPathAllowed(rel string) bool {
 	if err != nil {
 		return false
 	}
+	if isFilesystemJunkPath(rel) {
+		return false
+	}
 	if isSensitivePluginConfigPath(rel) {
 		return false
 	}

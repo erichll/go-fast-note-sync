@@ -52,6 +52,7 @@ type syncDaemon interface {
 	Connect()
 	SyncComplete() <-chan struct{}
 	SyncError() error
+	SetDebugDisconnectAfter(time.Duration)
 }
 
 type localWatcher interface {
@@ -68,6 +69,7 @@ var newLocalWatcher = func(vaultPath string, syncUpdateDelay int, handler local.
 
 func newStartCmd() *cobra.Command {
 	var cfgPath string
+	var debugDisconnectAfter time.Duration
 	cmd := &cobra.Command{
 		Use:   "start",
 		Short: "Start the sync daemon (foreground)",
@@ -88,6 +90,9 @@ func newStartCmd() *cobra.Command {
 				return fmt.Errorf("load state: %w", err)
 			}
 			svc := newSyncDaemon(cfg, st, statePath, cliVersion)
+			if debugDisconnectAfter > 0 {
+				svc.SetDebugDisconnectAfter(debugDisconnectAfter)
+			}
 			svc.Connect()
 			var w localWatcher
 			if cfg.SyncEnabled && cfg.VaultPath != "" {
@@ -107,6 +112,7 @@ func newStartCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", "", "path to config file (default: ~/.config/go-fast-note-sync/config.yaml)")
+	cmd.Flags().DurationVar(&debugDisconnectAfter, "debug-disconnect-after", 0, "debug only: close the WebSocket once after this duration to exercise reconnect (0 disables)")
 	return cmd
 }
 

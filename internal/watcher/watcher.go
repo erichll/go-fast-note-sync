@@ -177,9 +177,11 @@ func (w *Watcher) loop() {
 				// An overflow means the OS dropped an unknown number of
 				// events. Nothing re-reads them, so without a full re-scan
 				// those writes are stranded until some later unrelated edit
-				// touches the same files.
+				// touches the same files. Restore missing recursive watches
+				// first so the recovery scan sees newly created trees.
 				if errors.Is(err, fsnotify.ErrEventOverflow) {
-					log.Printf("[watcher] event queue overflowed, requesting full re-scan")
+					log.Printf("[watcher] event queue overflowed, reconciling watches and requesting full re-scan")
+					w.reconcileMissingWatches()
 					w.handler.HandleWatchOverflow()
 				}
 			}
@@ -348,6 +350,12 @@ func (w *Watcher) addRecursive(root string) error {
 		if rel != "." && !w.handler.ShouldWatchDir(rel) {
 			return filepath.SkipDir
 		}
+		w.mu.Lock()
+		_, already := w.watchedDirs[abs]
+		w.mu.Unlock()
+		if already {
+			return nil
+		}
 		if err := w.backend.Add(abs); err != nil {
 			if abs == w.root {
 				return err
@@ -360,6 +368,14 @@ func (w *Watcher) addRecursive(root string) error {
 		w.mu.Unlock()
 		return nil
 	})
+}
+
+// reconcileMissingWatches re-walks the vault and adds watches for directories
+// that appeared while the OS event queue was overflowing.
+func (w *Watcher) reconcileMissingWatches() {
+	if err := w.addRecursive(w.root); err != nil {
+		log.Printf("[watcher] reconcile watches: %v", err)
+	}
 }
 
 func (w *Watcher) removeKnownDir(abs string) bool {

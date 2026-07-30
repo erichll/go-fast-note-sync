@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/erichll/go-fast-note-sync/internal/config"
 	"github.com/erichll/go-fast-note-sync/internal/local"
@@ -157,6 +158,8 @@ func (f *fakeDaemon) HandleLocalRename(local.RenameEvent) local.Result {
 }
 
 func (f *fakeDaemon) HandleWatchOverflow() {}
+
+func (f *fakeDaemon) SetDebugDisconnectAfter(time.Duration) {}
 
 type fakeLocalWatcher struct {
 	closed bool

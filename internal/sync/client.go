@@ -117,8 +117,13 @@ type SyncService struct {
 	isAuth     bool
 	isRegister bool
 
-	isSyncing        bool
-	isSyncRequesting bool
+	isSyncing             bool
+	isSyncRequesting      bool
+	syncRoundID           uint64
+	syncRoundConn         WSConn
+	overflowRescanPending bool
+	debugDisconnectAfter  time.Duration
+	debugDisconnectOnce   stdsync.Once
 
 	binaryHandlers  map[string]func([]byte)
 	receiveHandlers map[string]func(json.RawMessage, *SyncService)
@@ -239,6 +244,39 @@ func (s *SyncService) SyncError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.syncErr
+}
+
+// SetDebugDisconnectAfter arms a one-shot debug hook that closes the active
+// WebSocket after the given duration following a successful dial. Zero disables
+// the hook. Intended for deterministic reconnect smoke; not a production flag.
+func (s *SyncService) SetDebugDisconnectAfter(d time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.debugDisconnectAfter = d
+	s.debugDisconnectOnce = stdsync.Once{}
+}
+
+func (s *SyncService) scheduleDebugDisconnect(conn WSConn) {
+	s.mu.Lock()
+	after := s.debugDisconnectAfter
+	s.mu.Unlock()
+	if after <= 0 || conn == nil {
+		return
+	}
+	s.debugDisconnectOnce.Do(func() {
+		go func() {
+			time.Sleep(after)
+			s.mu.Lock()
+			current := s.conn
+			registered := s.isRegister
+			s.mu.Unlock()
+			if !registered || current == nil || current != conn {
+				return
+			}
+			log.Printf("[debug] closing connection after %v for reconnect smoke", after)
+			_ = conn.Close()
+		}()
+	})
 }
 
 // buildWSURL constructs the WebSocket connection URL.
@@ -372,6 +410,7 @@ func (s *SyncService) connectOnce() {
 	s.mu.Unlock()
 
 	log.Printf("[ws] connected (wsCount=%d)", s.st.WsCount)
+	s.scheduleDebugDisconnect(conn)
 	if err := s.Send("Authorization", s.cfg.APIToken); err != nil {
 		log.Printf("[ws] failed to send Authorization: %v", err)
 	}

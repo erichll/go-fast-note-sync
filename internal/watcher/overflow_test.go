@@ -2,6 +2,9 @@ package watcher
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/fsnotify/fsnotify"
@@ -64,4 +67,39 @@ func TestNonOverflowErrorDoesNotRescan(t *testing.T) {
 
 	be.errors <- errors.New("permission denied")
 	assertNoEvent(t, h.events)
+}
+
+// Overflow recovery must re-register recursive watches for directories that
+// appeared while events were dropped.
+func TestEventOverflowReconcilesMissingDirectoryWatches(t *testing.T) {
+	root := t.TempDir()
+	be := newFakeBackend()
+	h := newRecordingHandler()
+
+	w, err := newWithBackend(root, 5, h, be)
+	if err != nil {
+		t.Fatalf("newWithBackend: %v", err)
+	}
+	defer func() { _ = w.Close() }()
+
+	missed := filepath.Join(root, "missed", "nested")
+	if err := os.MkdirAll(missed, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	be.errors <- fsnotify.ErrEventOverflow
+	if got := waitEvent(t, h.events); got != "overflow" {
+		t.Fatalf("got %q, want %q", got, "overflow")
+	}
+
+	var rels []string
+	for _, abs := range be.added {
+		rel, _ := filepath.Rel(root, abs)
+		rels = append(rels, filepath.ToSlash(rel))
+	}
+	for _, want := range []string{"missed", "missed/nested"} {
+		if !slices.Contains(rels, want) {
+			t.Fatalf("watched dirs = %#v, missing %s after overflow reconcile", rels, want)
+		}
+	}
 }

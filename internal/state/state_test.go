@@ -44,6 +44,7 @@ func TestLoadMissing(t *testing.T) {
 	}
 	if s == nil {
 		t.Fatal("expected non-nil state")
+		return
 	}
 	if s.WsCount != 0 {
 		t.Error("expected WsCount=0 for fresh state")

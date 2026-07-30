@@ -60,17 +60,18 @@ type Config struct {
 
 func Default() *Config {
 	return &Config{
-		API:                       "",
-		APIToken:                  "",
-		Vault:                     "",
-		VaultPath:                 "",
-		ClientType:                DefaultClientType,
-		SyncEnabled:               true,
-		ConfigSyncEnabled:         true,
-		OfflineDeleteSyncEnabled:  false,
-		ReadOnlySyncEnabled:       false,
-		ManualSyncEnabled:         false,
-		OfflineSyncStrategy:       "newTimeMerge",
+		API:                      "",
+		APIToken:                 "",
+		Vault:                    "",
+		VaultPath:                "",
+		ClientType:               DefaultClientType,
+		SyncEnabled:              true,
+		ConfigSyncEnabled:        true,
+		OfflineDeleteSyncEnabled: false,
+		ReadOnlySyncEnabled:      false,
+		ManualSyncEnabled:        false,
+		// Empty matches official client 2.4.0 / service 3.6.0 default behaviour.
+		OfflineSyncStrategy:       "",
 		SyncUpdateDelay:           500,
 		BinarySyncLimitEnabled:    true,
 		ConcurrencyControlEnabled: true,
@@ -117,27 +118,30 @@ func Load(path string) (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, fmt.Errorf("unmarshal config: %w", err)
 	}
-	if err := validateOfflineSyncStrategy(cfg.OfflineSyncStrategy); err != nil {
+	strategy, err := normalizeOfflineSyncStrategy(cfg.OfflineSyncStrategy)
+	if err != nil {
 		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
+	cfg.OfflineSyncStrategy = strategy
 	return &cfg, nil
 }
 
-// validateOfflineSyncStrategy rejects any strategy the sync service does not
-// recognize.
-//
-// The server picks its conflict-handling behaviour by matching this value, which
-// the client reports in ClientInfo. An unrecognized value matches none of those
-// branches and is not reported as an error: the server simply skips conflict
-// detection and merging, and the client's content overwrites whatever is stored.
-// Failing here keeps a typo from silently turning off data protection.
-func validateOfflineSyncStrategy(strategy string) error {
+// normalizeOfflineSyncStrategy validates the ClientInfo offlineSyncStrategy
+// value. The service recognizes only "", manualMerge, ignoreTimeMerge, and
+// newTimeMerge. Unrecognized values disable conflict handling silently on the
+// server, so they are rejected here. Legacy "auto" is normalized to empty for
+// upgrade compatibility with older generated configs.
+func normalizeOfflineSyncStrategy(strategy string) (string, error) {
+	if strategy == "auto" {
+		return "", nil
+	}
 	switch strategy {
 	case "", "manualMerge", "ignoreTimeMerge", "newTimeMerge":
-		return nil
+		return strategy, nil
 	}
-	return fmt.Errorf("offline_sync_strategy %q is not recognized by the sync service; "+
-		"valid values are manualMerge, ignoreTimeMerge, newTimeMerge", strategy)
+	return "", fmt.Errorf("offline_sync_strategy %q is not recognized by the sync service; "+
+		"valid values are empty, manualMerge, ignoreTimeMerge, newTimeMerge",
+		strategy)
 }
 
 // envRefRegexp matches ${VAR} references where VAR is a POSIX-shell-like identifier.

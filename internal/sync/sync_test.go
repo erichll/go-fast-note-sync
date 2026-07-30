@@ -1315,7 +1315,7 @@ func TestSendBinary_NotConnected(t *testing.T) {
 // ---- sendClientInfo content test ----
 
 func TestSendClientInfo_Payload(t *testing.T) {
-	cfg := &config.Config{OfflineSyncStrategy: "newTimeMerge"}
+	cfg := &config.Config{OfflineSyncStrategy: ""}
 	svc := newTestService(cfg, nil, "")
 	fc := &fakeWSConn{}
 	svc.mu.Lock()
@@ -1342,7 +1342,7 @@ func TestSendClientInfo_Payload(t *testing.T) {
 		"isLinux":             true,
 		"isDesktop":           false,
 		"isMobile":            false,
-		"offlineSyncStrategy": "newTimeMerge",
+		"offlineSyncStrategy": "",
 	}
 	for k, want := range checks {
 		got, ok := payload[k]

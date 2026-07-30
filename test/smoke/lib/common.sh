@@ -350,7 +350,7 @@ config_sync_enabled: true
 offline_delete_sync_enabled: false
 readonly_sync_enabled: false
 manual_sync_enabled: false
-offline_sync_strategy: auto
+offline_sync_strategy: ""
 sync_update_delay: 300
 binary_sync_limit_enabled: true
 concurrency_control_enabled: true
@@ -380,7 +380,15 @@ start_daemon() {
   : > "$log_path"
   # Make the recorded PID the daemon itself. Relying on the shell to optimize
   # the subshell's final command can leave a wrapper process that absorbs TERM.
-  ( SYNC_API="$SYNC_API" SYNC_TOKEN="$SYNC_TOKEN" exec "$bin" start --config "$config_path" >>"$log_path" 2>&1 ) &
+  #
+  # Optional SMOKE_DEBUG_DISCONNECT_AFTER (Go duration, e.g. 2s) passes
+  # --debug-disconnect-after so reconnect can be exercised without SIGSTOP or
+  # manual network interruption.
+  local disconnect_args=()
+  if [ -n "${SMOKE_DEBUG_DISCONNECT_AFTER:-}" ]; then
+    disconnect_args=(--debug-disconnect-after "$SMOKE_DEBUG_DISCONNECT_AFTER")
+  fi
+  ( SYNC_API="$SYNC_API" SYNC_TOKEN="$SYNC_TOKEN" exec "$bin" start --config "$config_path" "${disconnect_args[@]}" >>"$log_path" 2>&1 ) &
   local pid=$!
   printf '%s\n' "$pid"
 }

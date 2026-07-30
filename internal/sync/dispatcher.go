@@ -64,7 +64,7 @@ func (s *SyncService) dispatchText(raw string) {
 				env.Code, env.Message, env.Details, action)
 		}
 		if isSyncRoundAction(action) {
-			s.onSyncFailed(fmt.Errorf("service %s failed: code=%d message=%s details=%s",
+			s.onSyncFailed(s.currentSyncRoundID(), fmt.Errorf("service %s failed: code=%d message=%s details=%s",
 				action, env.Code, env.Message, env.Details))
 		}
 		return

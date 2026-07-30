@@ -85,3 +85,17 @@ func TestLocalCategory_JunkIsSkipped(t *testing.T) {
 		t.Errorf("localCategory of a real note = %v, want localCategoryNote", got)
 	}
 }
+
+func TestIsConfigSyncPathAllowed_JunkInOtherDirs(t *testing.T) {
+	cfg := &config.Config{ConfigSyncOtherDirs: []string{"extra-config"}}
+	s := newTestService(cfg, nil, "")
+	if s.isConfigSyncPathAllowed("extra-config/._settings.json") {
+		t.Error("AppleDouble under ConfigSyncOtherDirs must be rejected")
+	}
+	if s.isConfigSyncPathAllowed("extra-config/.DS_Store") {
+		t.Error(".DS_Store under ConfigSyncOtherDirs must be rejected")
+	}
+	if !s.isConfigSyncPathAllowed("extra-config/settings.json") {
+		t.Error("real config under ConfigSyncOtherDirs should still sync")
+	}
+}

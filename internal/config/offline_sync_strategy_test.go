@@ -25,6 +25,12 @@ func TestDefaultOfflineSyncStrategyIsServerRecognized(t *testing.T) {
 		got, serverRecognizedStrategies)
 }
 
+func TestDefaultOfflineSyncStrategyMatchesOfficialEmpty(t *testing.T) {
+	if got := Default().OfflineSyncStrategy; got != "" {
+		t.Fatalf("default offline_sync_strategy = %q, want empty (official client 2.4.0)", got)
+	}
+}
+
 func TestLoadAcceptsEveryServerRecognizedStrategy(t *testing.T) {
 	for _, strategy := range serverRecognizedStrategies {
 		t.Run("strategy="+strategy, func(t *testing.T) {
@@ -40,8 +46,19 @@ func TestLoadAcceptsEveryServerRecognizedStrategy(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsUnrecognizedOfflineSyncStrategy(t *testing.T) {
+func TestLoadNormalizesLegacyAutoToEmpty(t *testing.T) {
 	path := writeStrategyConfig(t, "auto")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load(auto): %v", err)
+	}
+	if cfg.OfflineSyncStrategy != "" {
+		t.Fatalf("legacy auto must normalize to empty, got %q", cfg.OfflineSyncStrategy)
+	}
+}
+
+func TestLoadRejectsUnrecognizedOfflineSyncStrategy(t *testing.T) {
+	path := writeStrategyConfig(t, "bestEffort")
 
 	_, err := Load(path)
 	if err == nil {

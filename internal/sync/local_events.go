@@ -248,11 +248,23 @@ func (s *SyncService) sendLocalModifyForCategory(cat localCategory, rp resolvedP
 // skips files whose mtime predates the last sync time, so a file written
 // during the overflow window is never re-offered. A full re-scan is the only
 // way to find them, so this deliberately ignores the persisted sync
-// timestamps.
-//
-// handleSync already refuses to start when a sync is in flight or when manual
-// sync mode is set, so this is safe to call at any time.
+// timestamps. If a sync is already in flight the recovery is queued so the
+// overflow cannot be lost, and multiple overflows collapse to one eventual
+// full reconciliation.
 func (s *SyncService) HandleWatchOverflow() {
-	log.Printf("[sync] watcher overflow: starting full re-scan to recover dropped events")
+	log.Printf("[sync] watcher overflow: requesting full re-scan to recover dropped events")
+	s.mu.Lock()
+	if s.cfg != nil && s.cfg.ManualSyncEnabled {
+		s.mu.Unlock()
+		log.Printf("[sync] watcher overflow: manual sync mode, ignoring")
+		return
+	}
+	if s.isSyncing {
+		s.overflowRescanPending = true
+		s.mu.Unlock()
+		log.Printf("[sync] watcher overflow: full re-scan queued until current round finishes")
+		return
+	}
+	s.mu.Unlock()
 	go s.handleSync(false)
 }

@@ -137,6 +137,7 @@ capabilities (see Plan.md / Documentation.md).
 | 15 | M1.10 | Offline `status` reports persisted counters and timestamps without contacting the service. | offline | ✅ |
 | 16 | M1.11 | One-shot `sync` times out non-zero on a tiny deadline and exits successfully only after a real completed sync round. | single client | ✅ |
 | 17 | M2.0 | Service 3.6 paged downlink: checkpoint both clients past retained tombstones, seed more than 200 notes, observe multiple `NoteSyncPage` messages and cumulative ACKs, verify B materializes every note, and confirm graceful shutdown after the atomic-write burst. | two clients (A→B) | ✅ |
+| 18 | M2.2 | Deterministic reconnect via `--debug-disconnect-after` / `SMOKE_DEBUG_DISCONNECT_AFTER` (default `2s`): warm a checkpoint first, then force one socket close, reconnect through the existing path, reach `ws_count = warm + 2`, and complete a later sync round without SIGSTOP or manual network interruption. | single client | ✅ |
 
 ## Authoring a new case
 

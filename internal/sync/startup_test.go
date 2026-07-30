@@ -345,8 +345,10 @@ func TestOnSyncComplete_SetsIsInitSync(t *testing.T) {
 	st := state.New()
 	svc := newTestService(nil, st, statePath)
 	svc.statePath = statePath
+	svc.isSyncing = true
+	svc.syncRoundID = 1
 
-	svc.onSyncComplete(false) // wasInitSync=false → should set IsInitSync=true
+	svc.onSyncComplete(1, false) // wasInitSync=false → should set IsInitSync=true
 
 	loaded, err := state.Load(statePath)
 	if err != nil {
@@ -360,7 +362,9 @@ func TestOnSyncComplete_SetsIsInitSync(t *testing.T) {
 func TestOnSyncComplete_DoesNotUpdateWhenAlreadyInit(t *testing.T) {
 	svc := newTestService(nil, nil, "")
 	svc.st.IsInitSync = false
-	svc.onSyncComplete(true) // wasInitSync=true → no change needed
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.onSyncComplete(1, true) // wasInitSync=true → no change needed
 	// No panic, no state write (statePath is "")
 }
 
@@ -466,8 +470,13 @@ func TestScanVault_BaseHashAndMissing(t *testing.T) {
 			newSnap = &result.notes[i]
 		}
 	}
-	if knownSnap == nil || newSnap == nil {
-		t.Fatal("expected both known.md and new.md in notes")
+	if knownSnap == nil {
+		t.Fatal("known.md missing from notes")
+		return
+	}
+	if newSnap == nil {
+		t.Fatal("new.md missing from notes")
+		return
 	}
 	if knownSnap.BaseHash == nil || *knownSnap.BaseHash != "oldhash" {
 		t.Errorf("known.md should have BaseHash=oldhash, got %v", knownSnap.BaseHash)
@@ -577,8 +586,10 @@ func TestRunCheckSyncCompletion_TimeoutDoesNotSetIsInitSync(t *testing.T) {
 	svc := newTestService(nil, st, statePath)
 	svc.statePath = statePath
 	svc.syncTimeout = 30 * time.Millisecond
+	svc.isSyncing = true
+	svc.syncRoundID = 1
 
-	svc.runCheckSyncCompletion(false)
+	svc.runCheckSyncCompletion(1, false)
 
 	if svc.st.IsInitSync {
 		t.Error("timeout must not mark initial sync complete")
@@ -591,6 +602,8 @@ func TestRunCheckSyncCompletion_TimeoutDoesNotSetIsInitSync(t *testing.T) {
 func TestRunCheckSyncCompletion_ProgressExtendsTimeout(t *testing.T) {
 	svc := newTestService(nil, nil, "")
 	svc.syncTimeout = 300 * time.Millisecond
+	svc.isSyncing = true
+	svc.syncRoundID = 1
 	svc.noteSyncEnd = true
 	svc.noteSyncTasks.NeedModify = 2
 	svc.fileSyncEnd = true
@@ -598,7 +611,7 @@ func TestRunCheckSyncCompletion_ProgressExtendsTimeout(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		svc.runCheckSyncCompletion(true)
+		svc.runCheckSyncCompletion(1, true)
 		close(done)
 	}()
 	time.Sleep(150 * time.Millisecond)
@@ -622,6 +635,8 @@ func TestRunCheckSyncCompletion_CompletesEarly(t *testing.T) {
 	svc := newTestService(nil, nil, statePath)
 	svc.statePath = statePath
 	svc.syncTimeout = 5 * time.Second // long timeout
+	svc.isSyncing = true
+	svc.syncRoundID = 1
 
 	// Pre-set all conditions to done
 	svc.noteSyncEnd = true
@@ -632,7 +647,7 @@ func TestRunCheckSyncCompletion_CompletesEarly(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		svc.runCheckSyncCompletion(true)
+		svc.runCheckSyncCompletion(1, true)
 		close(done)
 	}()
 
@@ -661,7 +676,9 @@ func TestSendSyncRequests_SendsAllFourMessages(t *testing.T) {
 	svc.folderSyncEnd = true
 
 	result := newScanResult()
-	svc.sendSyncRequests(result, "test-ctx", false)
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.sendSyncRequests(1, result, "test-ctx", false)
 
 	var actions []string
 	for _, msg := range fc.written {
@@ -693,7 +710,9 @@ func TestSendSyncRequests_FolderSyncFirst(t *testing.T) {
 	svc.mu.Unlock()
 	svc.folderSyncEnd = true
 
-	svc.sendSyncRequests(newScanResult(), "ctx", false)
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.sendSyncRequests(1, newScanResult(), "ctx", false)
 
 	if len(fc.written) < 1 {
 		t.Fatal("no messages written")
@@ -713,7 +732,9 @@ func TestSendSyncRequests_NoSettingSyncWhenDisabled(t *testing.T) {
 	svc.mu.Unlock()
 	svc.folderSyncEnd = true
 
-	svc.sendSyncRequests(newScanResult(), "ctx", false)
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.sendSyncRequests(1, newScanResult(), "ctx", false)
 
 	for _, msg := range fc.written {
 		if strings.HasPrefix(msg, "SettingSync|") {
@@ -1005,6 +1026,7 @@ func TestScanConfigs_BaseHashAttached(t *testing.T) {
 	}
 	if snap == nil {
 		t.Fatal("app.json missing from configs")
+		return
 	}
 	if snap.BaseHash == nil || *snap.BaseHash != "oldhash" {
 		t.Errorf("BaseHash = %v, want oldhash", snap.BaseHash)
@@ -1239,7 +1261,9 @@ func TestSendSyncRequests_OfflineDeleteFillsPending(t *testing.T) {
 	r.delConfigs = []PathHashFile{{Path: ".obsidian/del.json", PathHash: "h"}}
 	r.delFolders = []PathHashFile{{Path: "del-folder", PathHash: "h"}}
 
-	svc.sendSyncRequests(r, "ctx", false)
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.sendSyncRequests(1, r, "ctx", false)
 
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
@@ -1269,7 +1293,9 @@ func TestSendSyncRequests_WritesFolderSnapshot(t *testing.T) {
 	r := newScanResult()
 	r.folders = []SnapFolder{{Path: "fA", PathHash: "h"}, {Path: "fB", PathHash: "h2"}}
 
-	svc.sendSyncRequests(r, "ctx", false)
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.sendSyncRequests(1, r, "ctx", false)
 
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
@@ -1294,7 +1320,9 @@ func TestSendSyncRequests_PopulatesPendingModifies(t *testing.T) {
 	r.notes = []SnapFile{{Path: "a.md", PathHash: "p", ContentHash: "ch-note"}}
 	r.configs = []SnapFile{{Path: ".obsidian/app.json", PathHash: "p", ContentHash: "ch-cfg"}}
 
-	svc.sendSyncRequests(r, "ctx", false)
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.sendSyncRequests(1, r, "ctx", false)
 
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
@@ -1316,7 +1344,9 @@ func TestSendSyncRequests_ReadOnlyDoesNotPopulatePendingModifies(t *testing.T) {
 	r.notes = []SnapFile{{Path: "a.md", PathHash: "p", ContentHash: "ch-note"}}
 	r.configs = []SnapFile{{Path: ".obsidian/app.json", PathHash: "p", ContentHash: "ch-cfg"}}
 
-	svc.sendSyncRequests(r, "ctx", false)
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.sendSyncRequests(1, r, "ctx", false)
 
 	if len(svc.pendingNoteModifies) != 0 || len(svc.st.PendingNoteModifies) != 0 {
 		t.Fatalf("read-only note pending maps = %v / %v, want empty", svc.pendingNoteModifies, svc.st.PendingNoteModifies)
@@ -1340,7 +1370,9 @@ func TestSendSyncRequests_IncrementalUsesStateLastTime(t *testing.T) {
 	svc.mu.Unlock()
 	svc.folderSyncEnd = true
 
-	svc.sendSyncRequests(newScanResult(), "ctx", true)
+	svc.isSyncing = true
+	svc.syncRoundID = 1
+	svc.sendSyncRequests(1, newScanResult(), "ctx", true)
 
 	hasLastTime := func(action string, want int64) {
 		for _, msg := range fc.written {
@@ -1390,6 +1422,8 @@ func TestSaveState_CreatesParentDir(t *testing.T) {
 
 func TestSyncComplete_ClosedAfterOnSyncComplete(t *testing.T) {
 	svc := newTestService(nil, nil, "")
+	svc.isSyncing = true
+	svc.syncRoundID = 1
 
 	select {
 	case <-svc.SyncComplete():
@@ -1397,7 +1431,7 @@ func TestSyncComplete_ClosedAfterOnSyncComplete(t *testing.T) {
 	default:
 	}
 
-	svc.onSyncComplete(false)
+	svc.onSyncComplete(1, false)
 
 	select {
 	case <-svc.SyncComplete():
@@ -1408,10 +1442,12 @@ func TestSyncComplete_ClosedAfterOnSyncComplete(t *testing.T) {
 
 func TestSyncComplete_IdempotentMultipleCalls(t *testing.T) {
 	svc := newTestService(nil, nil, "")
+	svc.isSyncing = true
+	svc.syncRoundID = 1
 
 	// Calling onSyncComplete twice must not panic (syncDoneOnce guards close).
-	svc.onSyncComplete(true)
-	svc.onSyncComplete(true)
+	svc.onSyncComplete(1, true)
+	svc.onSyncComplete(1, true)
 
 	select {
 	case <-svc.SyncComplete():
