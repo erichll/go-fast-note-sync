@@ -1169,7 +1169,7 @@ func TestM14LocalSendHelpersAndRuntimeHelpers(t *testing.T) {
 		SyncExcludeWhitelist:      []string{"private/ok"},
 		SyncExcludeExtensions:     []string{".tmp"},
 		BinarySyncLimitEnabled:    true,
-		OfflineSyncStrategy:       "auto",
+		OfflineSyncStrategy:       "newTimeMerge",
 		ReadOnlySyncEnabled:       false,
 		ManualSyncEnabled:         false,
 		AutoRedirectEnabled:       false,
