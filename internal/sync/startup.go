@@ -366,9 +366,26 @@ func (s *SyncService) runCheckSyncCompletion(wasInitSync bool) {
 			log.Printf("[sync] checkSyncCompletion: no progress for %v", timeout)
 			s.cleanupActiveFileTransfersOnTimeout()
 			s.onSyncFailed(fmt.Errorf("sync made no progress for %v", timeout))
+			s.dropConnectionAfterStall()
 			return
 		}
 	}
+}
+
+// dropConnectionAfterStall closes the socket so readLoop unwinds into the
+// reconnect path. Only authentication and watcher overflow start a sync round,
+// so without this a stalled round leaves a healthy connection that never syncs
+// again.
+func (s *SyncService) dropConnectionAfterStall() {
+	s.mu.Lock()
+	conn := s.conn
+	registered := s.isRegister
+	s.mu.Unlock()
+	if conn == nil || !registered {
+		return
+	}
+	log.Printf("[sync] dropping connection after stall to force a fresh sync round")
+	conn.Close() //nolint:errcheck
 }
 
 type syncProgress struct {
