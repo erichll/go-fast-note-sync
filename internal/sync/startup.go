@@ -866,8 +866,33 @@ func (s *SyncService) scanConfigs(vaultPath string, configHashMap map[string]sta
 	return nil
 }
 
+// isFilesystemJunkPath reports whether a vault-relative path is a macOS
+// filesystem artifact rather than vault content: an AppleDouble sidecar
+// ("._Foo") or a ".DS_Store" index.
+//
+// These must never sync. The Obsidian plugin has never tracked them, so any
+// that this client uploads become files the plugin can never delete, and they
+// accumulate on every other peer. Worse, an AppleDouble sidecar for a note is
+// named "._Note.md": without this rule it is classified as a note and its
+// binary payload is sent to the server as note text.
+func isFilesystemJunkPath(relPath string) bool {
+	base := relPath
+	if i := strings.LastIndexAny(relPath, `/\`); i >= 0 {
+		base = relPath[i+1:]
+	}
+	if strings.HasPrefix(base, "._") {
+		return true
+	}
+	return strings.EqualFold(base, ".DS_Store")
+}
+
 // isVaultFileExcluded returns true if a vault-relative file path should be excluded.
 func (s *SyncService) isVaultFileExcluded(relPath string) bool {
+	// Checked ahead of the whitelist: a user exclusion whitelist must not be
+	// able to resurrect filesystem junk.
+	if isFilesystemJunkPath(relPath) {
+		return true
+	}
 	for _, w := range s.cfg.SyncExcludeWhitelist {
 		if relPath == w || strings.HasPrefix(relPath, w+"/") {
 			return false
