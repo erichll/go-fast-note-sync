@@ -94,6 +94,10 @@ func (h *recordingHandler) HandleLocalRename(ev local.RenameEvent) local.Result 
 	return local.Result{Attempted: true}
 }
 
+func (h *recordingHandler) HandleWatchOverflow() {
+	h.events <- "overflow"
+}
+
 func dirSuffix(isDir bool) string {
 	if isDir {
 		return ":dir"
