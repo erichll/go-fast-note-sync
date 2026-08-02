@@ -22,6 +22,21 @@ docker pull ghcr.io/erichll/go-fast-note-sync:v0.1.0
 
 Use `ghcr.io/erichll/go-fast-note-sync:<tag>` wherever the image is referenced in Compose or Kubernetes configs.
 
+A rolling `main` tag is also published from every push to `main`. It tracks the
+latest main HEAD and is **edge**: it may include unreleased changes and is not
+as stabilization-tested as a tagged release. Use it when you need a fix that
+landed on main but has not been cut as a release yet:
+
+```bash
+docker pull ghcr.io/erichll/go-fast-note-sync:main
+# or pin a specific commit:
+docker pull ghcr.io/erichll/go-fast-note-sync:sha-abc1234
+```
+
+The `main` image reports its commit via `go-fast-note-sync --version`
+(`go-fast-note-sync version sha-abc1234`), so you can confirm exactly which
+source it was built from.
+
 > **Note:** The GHCR package must have **Public** visibility for anonymous pulls to work. If you see an authentication error, verify the package is public in the GitHub package settings, then retry.
 
 ### Option B — Build locally
