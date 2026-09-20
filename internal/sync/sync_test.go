@@ -44,6 +44,7 @@ type fakeWSConn struct {
 
 	// M1.9 fields — all protected by mu except chan values themselves.
 	readDeadline    time.Time
+	writeDeadline   time.Time
 	pongHandler     func(string) error
 	controlWrites   []controlFrame
 	writeControlErr error
@@ -142,6 +143,13 @@ func (f *fakeWSConn) SetReadDeadline(t time.Time) error {
 	case f.expireCh <- struct{}{}:
 	default:
 	}
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *fakeWSConn) SetWriteDeadline(t time.Time) error {
+	f.mu.Lock()
+	f.writeDeadline = t
 	f.mu.Unlock()
 	return nil
 }
@@ -1732,5 +1740,60 @@ func TestCheckHealth_AutoRedirectEnabled_WithRedirect(t *testing.T) {
 	}
 	if !strings.HasPrefix(newAPI, "http://") {
 		t.Errorf("newAPI = %q, want http:// prefix", newAPI)
+	}
+}
+
+// ---- data-frame write deadline ----
+
+// A data-frame write with no deadline blocks until the OS abandons the TCP
+// connection when the peer stops reading. Send holds writeMu across that
+// write, so every later write blocks with it and the sync round is stranded:
+// runCheckSyncCompletion is only started after sendSyncRequests returns, so
+// the round-completion watchdog never gets to run and isSyncing stays set
+// until the connection is finally torn down. Ping control frames already
+// carry writeWait; these tests pin the same bound onto the data path.
+func TestSendAppliesWriteDeadline(t *testing.T) {
+	dir := t.TempDir()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: dir}, nil, filepath.Join(dir, "state.json"))
+	conn := newFakeWSConn()
+	svc.conn = conn
+
+	before := time.Now()
+	if err := svc.Send("NoteSync", "payload"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	conn.mu.Lock()
+	deadline := conn.writeDeadline
+	conn.mu.Unlock()
+
+	if deadline.IsZero() {
+		t.Fatal("Send left the write deadline unset; a peer that stops reading would hold writeMu indefinitely")
+	}
+	if got := deadline.Sub(before); got < writeWait || got > writeWait+time.Minute {
+		t.Fatalf("write deadline = before+%v, want approximately before+%v", got, writeWait)
+	}
+}
+
+func TestSendBinaryAppliesWriteDeadline(t *testing.T) {
+	dir := t.TempDir()
+	svc := newTestService(&config.Config{Vault: "vault", VaultPath: dir}, nil, filepath.Join(dir, "state.json"))
+	conn := newFakeWSConn()
+	svc.conn = conn
+
+	before := time.Now()
+	if err := svc.SendBinary(binaryPrefixFileSync, []byte("chunk")); err != nil {
+		t.Fatalf("SendBinary: %v", err)
+	}
+
+	conn.mu.Lock()
+	deadline := conn.writeDeadline
+	conn.mu.Unlock()
+
+	if deadline.IsZero() {
+		t.Fatal("SendBinary left the write deadline unset")
+	}
+	if got := deadline.Sub(before); got < writeWait || got > writeWait+time.Minute {
+		t.Fatalf("write deadline = before+%v, want approximately before+%v", got, writeWait)
 	}
 }

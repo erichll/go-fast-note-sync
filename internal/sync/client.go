@@ -53,6 +53,7 @@ type WSConn interface {
 	WriteMessage(messageType int, data []byte) error
 	WriteControl(messageType int, data []byte, deadline time.Time) error
 	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
 	SetPongHandler(h func(appData string) error)
 	Close() error
 }
@@ -597,13 +598,24 @@ func (s *SyncService) Send(action string, payload interface{}) error {
 	}
 
 	s.writeMu.Lock()
-	err := conn.WriteMessage(wsTextMessage, []byte(action+"|"+body))
+	err := s.writeWithDeadline(conn, wsTextMessage, []byte(action+"|"+body))
 	s.writeMu.Unlock()
 	if err != nil {
 		log.Printf("[ws] send %s: %v", action, err)
 		return err
 	}
 	return nil
+}
+
+// writeWithDeadline bounds a data-frame write with writeWait, mirroring the
+// deadline already applied to ping control frames. Without it, a write to a
+// peer that has stopped reading blocks until the OS abandons the TCP
+// connection — holding writeMu, and with it the entire sync round, for hours.
+func (s *SyncService) writeWithDeadline(conn WSConn, messageType int, data []byte) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		return err
+	}
+	return conn.WriteMessage(messageType, data)
 }
 
 // SendBinary writes a binary frame with a 2-byte ASCII prefix prepended.
@@ -621,7 +633,7 @@ func (s *SyncService) SendBinary(prefix string, data []byte) error {
 	copy(frame[:2], prefix)
 	copy(frame[2:], data)
 	s.writeMu.Lock()
-	err := conn.WriteMessage(wsBinaryMessage, frame)
+	err := s.writeWithDeadline(conn, wsBinaryMessage, frame)
 	s.writeMu.Unlock()
 	return err
 }
