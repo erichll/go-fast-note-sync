@@ -43,16 +43,20 @@ type fakeWSConn struct {
 	writeErr error
 
 	// M1.9 fields — all protected by mu except chan values themselves.
-	readDeadline    time.Time
-	writeDeadline   time.Time
-	pongHandler     func(string) error
-	controlWrites   []controlFrame
-	writeControlErr error
-	blockOnEmpty    bool
-	expireCh        chan struct{} // capacity-1, non-closing; used to wake ReadMessage on deadline change
-	messageCh       chan struct{} // capacity-1, non-closing; used to wake ReadMessage on new message
-	closeCh         chan struct{} // closed once by closeOnce when Close() is called
-	closeOnce       stdsync.Once
+	readDeadline            time.Time
+	writeDeadline           time.Time
+	writeDeadlineAtWrite    time.Time
+	writeDeadlineErr        error
+	writeEvents             []string
+	blockWriteUntilDeadline bool
+	pongHandler             func(string) error
+	controlWrites           []controlFrame
+	writeControlErr         error
+	blockOnEmpty            bool
+	expireCh                chan struct{} // capacity-1, non-closing; used to wake ReadMessage on deadline change
+	messageCh               chan struct{} // capacity-1, non-closing; used to wake ReadMessage on new message
+	closeCh                 chan struct{} // closed once by closeOnce when Close() is called
+	closeOnce               stdsync.Once
 }
 
 // newFakeWSConn constructs a fakeWSConn with all M1.9 channels initialized.
@@ -117,12 +121,32 @@ func (f *fakeWSConn) ReadMessage() (int, []byte, error) {
 
 func (f *fakeWSConn) WriteMessage(mtype int, data []byte) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.writeErr != nil {
-		return f.writeErr
+	f.writeEvents = append(f.writeEvents, "write")
+	f.writeDeadlineAtWrite = f.writeDeadline
+	deadline := f.writeDeadline
+	writeErr := f.writeErr
+	blockUntilDeadline := f.blockWriteUntilDeadline
+	if writeErr == nil && !blockUntilDeadline {
+		f.wtypes = append(f.wtypes, mtype)
+		f.written = append(f.written, string(data))
 	}
-	f.wtypes = append(f.wtypes, mtype)
-	f.written = append(f.written, string(data))
+	f.mu.Unlock()
+
+	if writeErr != nil {
+		return writeErr
+	}
+	if blockUntilDeadline {
+		if deadline.IsZero() {
+			return fmt.Errorf("blocked write started without a deadline")
+		}
+		wait := time.Until(deadline)
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			defer timer.Stop()
+			<-timer.C
+		}
+		return os.ErrDeadlineExceeded
+	}
 	return nil
 }
 
@@ -149,8 +173,12 @@ func (f *fakeWSConn) SetReadDeadline(t time.Time) error {
 
 func (f *fakeWSConn) SetWriteDeadline(t time.Time) error {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.writeEvents = append(f.writeEvents, "deadline")
+	if f.writeDeadlineErr != nil {
+		return f.writeDeadlineErr
+	}
 	f.writeDeadline = t
-	f.mu.Unlock()
 	return nil
 }
 
@@ -1745,55 +1773,101 @@ func TestCheckHealth_AutoRedirectEnabled_WithRedirect(t *testing.T) {
 
 // ---- data-frame write deadline ----
 
-// A data-frame write with no deadline blocks until the OS abandons the TCP
+// A data-frame write with no deadline can block until the OS abandons the TCP
 // connection when the peer stops reading. Send holds writeMu across that
-// write, so every later write blocks with it and the sync round is stranded:
-// runCheckSyncCompletion is only started after sendSyncRequests returns, so
-// the round-completion watchdog never gets to run and isSyncing stays set
-// until the connection is finally torn down. Ping control frames already
-// carry writeWait; these tests pin the same bound onto the data path.
-func TestSendAppliesWriteDeadline(t *testing.T) {
-	dir := t.TempDir()
-	svc := newTestService(&config.Config{Vault: "vault", VaultPath: dir}, nil, filepath.Join(dir, "state.json"))
-	conn := newFakeWSConn()
-	svc.conn = conn
-
-	before := time.Now()
-	if err := svc.Send("NoteSync", "payload"); err != nil {
-		t.Fatalf("Send: %v", err)
+// write, so every later data write blocks with it and the sync round can be
+// stranded before its completion watchdog starts. Ping control frames already
+// carry writeWait; these tests pin the same bound and call order onto the data
+// path.
+func TestDataFrameSendsSetDeadlineBeforeWrite(t *testing.T) {
+	tests := []struct {
+		name string
+		send func(*SyncService) error
+	}{
+		{name: "text", send: func(s *SyncService) error { return s.Send("NoteSync", "payload") }},
+		{name: "binary", send: func(s *SyncService) error { return s.SendBinary(binaryPrefixFileSync, []byte("chunk")) }},
 	}
 
-	conn.mu.Lock()
-	deadline := conn.writeDeadline
-	conn.mu.Unlock()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			svc := newTestService(&config.Config{Vault: "vault", VaultPath: dir}, nil, filepath.Join(dir, "state.json"))
+			conn := newFakeWSConn()
+			svc.conn = conn
 
-	if deadline.IsZero() {
-		t.Fatal("Send left the write deadline unset; a peer that stops reading would hold writeMu indefinitely")
-	}
-	if got := deadline.Sub(before); got < writeWait || got > writeWait+time.Minute {
-		t.Fatalf("write deadline = before+%v, want approximately before+%v", got, writeWait)
+			before := time.Now()
+			if err := tt.send(svc); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			after := time.Now()
+
+			conn.mu.Lock()
+			events := append([]string(nil), conn.writeEvents...)
+			deadline := conn.writeDeadline
+			deadlineAtWrite := conn.writeDeadlineAtWrite
+			conn.mu.Unlock()
+
+			if got, want := strings.Join(events, ","), "deadline,write"; got != want {
+				t.Fatalf("write events = %q, want %q", got, want)
+			}
+			if deadline.IsZero() || !deadlineAtWrite.Equal(deadline) {
+				t.Fatalf("write observed deadline %v, want %v", deadlineAtWrite, deadline)
+			}
+			if deadline.Before(before.Add(writeWait)) || deadline.After(after.Add(writeWait)) {
+				t.Fatalf("write deadline = %v, want between send start/end + %v", deadline, writeWait)
+			}
+		})
 	}
 }
 
-func TestSendBinaryAppliesWriteDeadline(t *testing.T) {
-	dir := t.TempDir()
-	svc := newTestService(&config.Config{Vault: "vault", VaultPath: dir}, nil, filepath.Join(dir, "state.json"))
+func TestDataFrameSendsReturnDeadlineSetupErrorWithoutWriting(t *testing.T) {
+	deadlineErr := fmt.Errorf("set write deadline")
+	tests := []struct {
+		name string
+		send func(*SyncService) error
+	}{
+		{name: "text", send: func(s *SyncService) error { return s.Send("NoteSync", "payload") }},
+		{name: "binary", send: func(s *SyncService) error { return s.SendBinary(binaryPrefixFileSync, []byte("chunk")) }},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newTestService(nil, nil, "")
+			conn := newFakeWSConn()
+			conn.writeDeadlineErr = deadlineErr
+			svc.conn = conn
+
+			if err := tt.send(svc); err != deadlineErr {
+				t.Fatalf("send error = %v, want %v", err, deadlineErr)
+			}
+
+			conn.mu.Lock()
+			events := append([]string(nil), conn.writeEvents...)
+			conn.mu.Unlock()
+			if got, want := strings.Join(events, ","), "deadline"; got != want {
+				t.Fatalf("write events = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func TestSendBlockedWriteReturnsAtDeadline(t *testing.T) {
+	originalWriteWait := writeWait
+	writeWait = 20 * time.Millisecond
+	t.Cleanup(func() { writeWait = originalWriteWait })
+
+	svc := newTestService(nil, nil, "")
 	conn := newFakeWSConn()
+	conn.blockWriteUntilDeadline = true
 	svc.conn = conn
 
-	before := time.Now()
-	if err := svc.SendBinary(binaryPrefixFileSync, []byte("chunk")); err != nil {
-		t.Fatalf("SendBinary: %v", err)
+	started := time.Now()
+	err := svc.Send("NoteSync", "payload")
+	elapsed := time.Since(started)
+	if err != os.ErrDeadlineExceeded {
+		t.Fatalf("Send error = %v, want %v", err, os.ErrDeadlineExceeded)
 	}
-
-	conn.mu.Lock()
-	deadline := conn.writeDeadline
-	conn.mu.Unlock()
-
-	if deadline.IsZero() {
-		t.Fatal("SendBinary left the write deadline unset")
-	}
-	if got := deadline.Sub(before); got < writeWait || got > writeWait+time.Minute {
-		t.Fatalf("write deadline = before+%v, want approximately before+%v", got, writeWait)
+	if elapsed < writeWait || elapsed > time.Second {
+		t.Fatalf("Send returned after %v, want between %v and 1s", elapsed, writeWait)
 	}
 }
