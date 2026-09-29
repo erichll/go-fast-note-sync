@@ -727,15 +727,28 @@ func (s *SyncService) mergeDownloadSession(session *FileDownloadSession) {
 	}
 	s.addIgnoredFile(rp.Rel)
 
+	// Commit through the destination directory: renaming straight from
+	// temp-chunks (outside the vault) keeps temp-chunks' inherited ACL on the
+	// same volume, which locks SMB users out of the committed file.
+	stagedFinal, err := stageFileInDestDir(staged, rp.Abs)
+	if err != nil {
+		log.Printf("[handler] download stage in dest dir failed path=%q session=%s: %v", rp.Rel, session.SessionID, err)
+		s.abortDownloadSession(session.SessionID, "stage in dest failed")
+		return
+	}
+
 	s.mu.Lock()
 	current := s.fileDownloadSessions[session.SessionID]
 	if current != session || session.Cancelled {
 		s.mu.Unlock()
+		_ = os.Remove(stagedFinal)
 		_ = os.RemoveAll(session.TempDir)
 		return
 	}
-	if err := os.Rename(staged, rp.Abs); err != nil {
+	if err := replaceFile(stagedFinal, rp.Abs); err != nil {
 		s.mu.Unlock()
+		_ = os.Remove(stagedFinal)
+		log.Printf("[handler] download replace failed path=%q session=%s: %v", rp.Rel, session.SessionID, err)
 		s.abortDownloadSession(session.SessionID, "replace failed")
 		return
 	}
@@ -755,6 +768,7 @@ func (s *SyncService) mergeDownloadSession(session *FileDownloadSession) {
 	}
 	s.mu.Unlock()
 	_ = os.RemoveAll(session.TempDir)
+	log.Printf("[sync] download committed %q (%d bytes) via dest dir", rp.Rel, session.Size)
 	s.saveStateLog("FileDownloadComplete")
 	s.completeSyncPage("file", session.PageIndex)
 }
