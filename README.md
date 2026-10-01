@@ -27,10 +27,10 @@ The table lists combinations covered by the project's retained live smoke suite.
 
 | go-fast-note-sync | Obsidian client protocol baseline | fast-note-sync-service | Validation |
 |-------------------|-----------------------------------|------------------------|------------|
-| `v1.1.0` | Official client `2.4.0` | `3.6.0` | 17-case live smoke suite |
+| `v1.1.x` | Official client `2.4.0` | `3.6.0` | 17–20-case live smoke suite (`v1.1.0`–`v1.1.3`) |
 | `v1.0.0` | Client `2.0.15` generation | Not pinned in historical records | 14-case live smoke suite; no explicit server-version claim |
 
-For new deployments, use `v1.1.0` with service `3.6.0`.
+For new deployments, use the latest `v1.1.x` release (`v1.1.3`) with service `3.6.0`.
 
 ## Installation
 
@@ -41,7 +41,7 @@ Download the pre-built binary for your platform from the [GitHub Releases page](
 **Linux x86-64 example:**
 
 ```bash
-VERSION=v1.1.0
+VERSION=v1.1.3
 curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/go-fast-note-sync_linux_amd64.tar.gz"
 curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/checksums.txt"
 tar -xzf go-fast-note-sync_linux_amd64.tar.gz
@@ -63,7 +63,9 @@ sha256sum -c checksums.txt --ignore-missing
 docker pull ghcr.io/erichll/go-fast-note-sync:latest
 ```
 
-The GHCR package is public — no `docker login` required. Replace `latest` with a specific tag (e.g. `v1.1.0`) for pinned deployments.
+The GHCR package is public — no `docker login` required. Replace `latest` with a specific tag (e.g. `v1.1.3`) for pinned deployments.
+
+> **Architecture:** published images are **linux/amd64 only**. Release archives additionally cover linux/arm64, darwin/amd64, darwin/arm64, and windows/amd64. On other architectures, build the image locally (see **[deploy/docker/README.md](deploy/docker/README.md)**).
 
 See **[deploy/docker/README.md](deploy/docker/README.md)** for the full operator quickstart.
 
@@ -82,7 +84,7 @@ go-fast-note-sync --help
 go-fast-note-sync --version
 ```
 
-## Upgrading to v1.1.0
+## Upgrading to v1.1.x
 
 v1.1.0 adopts the rolling-hash and paged-sync contracts used by the official client 2.4.0 and service 3.6.0. On first start, an older state file is migrated automatically: incompatible hash caches, pending hashes, upload checkpoints, incremental sync timestamps, and the initial-sync marker are reset so the daemon performs a full reconciliation. Folder snapshots and the WebSocket connection counter are retained.
 
@@ -145,6 +147,9 @@ go-fast-note-sync sync --timeout 120s
 | `sync_enabled` | `true` | Enable note/attachment sync |
 | `config_sync_enabled` | `true` | Enable `.obsidian` settings sync |
 | `offline_delete_sync_enabled` | `false` | Push local deletes that happened while offline |
+| `readonly_sync_enabled` | `false` | One-way mode: apply remote changes locally but never upload local changes |
+| `manual_sync_enabled` | `false` | Disable automatic sync rounds (connect, startup, watcher); only the `sync` command triggers a round |
+| `offline_sync_strategy` | `""` | Server-side offline conflict strategy: `""`, `manualMerge`, `ignoreTimeMerge`, or `newTimeMerge`; legacy `auto` normalizes to `""` |
 | `sync_update_delay` | `500` | Debounce delay in ms for local file events |
 | `binary_sync_limit_enabled` | `true` | Skip files larger than 128 MiB |
 | `concurrency_control_enabled` | `true` | Enable upload slot control |
@@ -152,8 +157,10 @@ go-fast-note-sync sync --timeout 120s
 | `sync_exclude_folders` | `[]` | Literal root-relative paths, or single directory names at any depth |
 | `sync_exclude_extensions` | `[]` | File extensions to exclude (case-insensitive) |
 | `sync_exclude_whitelist` | `[]` | Literal root-relative paths overriding ordinary exclusions |
+| `config_sync_other_dirs` | `[]` | Extra vault directories synced as setting files in addition to `.obsidian` |
 | `startup_delay` | `0` | Seconds to wait before first connect |
-| `sync_timeout_seconds` | `60` | Max seconds to wait for a sync round |
+| `auto_redirect_enabled` | `true` | Follow a redirected `/api/health` response and adopt the new runtime API base URL |
+| `sync_timeout_seconds` | `0` | Max seconds to wait for a sync round; `0` uses the built-in 60 s default |
 | `state_file` | auto | Override default state file path |
 
 Default state path: `~/.local/share/go-fast-note-sync/state.json`
@@ -238,18 +245,18 @@ Coverage gate: total and `internal/sync` statement coverage must both stay ≥ 8
 ## Project Structure
 
 ```
-cmd/              CLI entry point (start / status / sync / init-config)
+.github/workflows/  CI (fmt, lint, race tests, coverage gate) and tag release/GHCR publish
+cmd/                CLI entry point (start / status / sync / init-config)
 internal/
-  config/         YAML config loading and defaults
-  state/          Atomic JSON state persistence
-  hash/           Protocol-compatible rolling content/path hashing
-  local/          Watcher-to-sync event contract
-  sync/           WebSocket client, startup sync, protocol handlers
-  watcher/        fsnotify watcher integration
-deploy/systemd/   systemd user-service unit
-deploy/docker/    Docker multi-stage build and Compose deployment
-docs/             Design documents and protocol reference
-test/smoke/       Integration smoke test harness
+  config/           YAML config loading, defaults, and ${ENV} expansion
+  hash/             Rolling content/path hashing compatible with the official protocol
+  local/            Watcher-to-sync event contract
+  state/            Atomic JSON state persistence
+  sync/             WebSocket client, sync rounds, protocol handlers, chunked transfer, exclusions
+  watcher/          fsnotify integration with debounce, rename pairing, and overflow reporting
+deploy/systemd/     systemd user-service unit
+deploy/docker/      Multi-stage Dockerfile, Compose file, and operator README
+test/smoke/         Live-service smoke suite (cases, shared harness, cleanup scripts)
 ```
 
 ## Protocol

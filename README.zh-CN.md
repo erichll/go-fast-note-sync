@@ -27,10 +27,10 @@
 
 | go-fast-note-sync | Obsidian 客户端协议基线 | fast-note-sync-service | 验证情况 |
 |-------------------|--------------------------|------------------------|----------|
-| `v1.1.0` | 官方客户端 `2.4.0` | `3.6.0` | 17-case 真实服务 smoke |
+| `v1.1.x` | 官方客户端 `2.4.0` | `3.6.0` | 17–20-case 真实服务 smoke（`v1.1.0`–`v1.1.3`） |
 | `v1.0.0` | 客户端 `2.0.15` 代际协议 | 历史记录未固定版本 | 14-case 真实服务 smoke；不声明明确服务端版本 |
 
-新部署推荐使用 `v1.1.0` 搭配服务端 `3.6.0`。
+新部署推荐使用最新的 `v1.1.x` 版本（`v1.1.3`）搭配服务端 `3.6.0`。
 
 ## 安装
 
@@ -41,7 +41,7 @@
 **Linux x86-64 示例：**
 
 ```bash
-VERSION=v1.1.0
+VERSION=v1.1.3
 curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/go-fast-note-sync_linux_amd64.tar.gz"
 curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/checksums.txt"
 tar -xzf go-fast-note-sync_linux_amd64.tar.gz
@@ -63,7 +63,9 @@ sha256sum -c checksums.txt --ignore-missing
 docker pull ghcr.io/erichll/go-fast-note-sync:latest
 ```
 
-GHCR 镜像已设为公开，无需 `docker login`。将 `latest` 替换为具体版本标签（如 `v1.1.0`）可固定版本。
+GHCR 镜像已设为公开，无需 `docker login`。将 `latest` 替换为具体版本标签（如 `v1.1.3`）可固定版本。
+
+> **架构说明：** 已发布镜像仅为 **linux/amd64**。发布归档额外覆盖 linux/arm64、darwin/amd64、darwin/arm64 和 windows/amd64。其他架构请参考 **[deploy/docker/README.md](deploy/docker/README.md)** 自行构建镜像。
 
 完整操作指南见 **[deploy/docker/README.md](deploy/docker/README.md)**。
 
@@ -82,7 +84,7 @@ go-fast-note-sync --help
 go-fast-note-sync --version
 ```
 
-## 升级到 v1.1.0
+## 升级到 v1.1.x
 
 v1.1.0 采用官方客户端 2.4.0 和服务端 3.6.0 使用的 rolling hash 与分页同步契约。首次启动时会自动迁移旧版 state：清除不兼容的哈希缓存、pending 哈希、上传检查点、增量同步时间和首次同步标记，从而执行一次完整对账；文件夹快照和 WebSocket 连接计数会保留。
 
@@ -145,17 +147,31 @@ go-fast-note-sync sync --timeout 120s
 | `sync_enabled` | `true` | 是否启用笔记/附件同步 |
 | `config_sync_enabled` | `true` | 是否启用 `.obsidian` 设置同步 |
 | `offline_delete_sync_enabled` | `false` | 是否推送离线期间的本地删除操作 |
+| `readonly_sync_enabled` | `false` | 单向模式：只把服务端变更落到本地，从不上传本地变更 |
+| `manual_sync_enabled` | `false` | 关闭自动同步轮（连接、启动同步、文件监听触发），仅 `sync` 命令触发同步 |
+| `offline_sync_strategy` | `""` | 服务端离线冲突策略：`""`、`manualMerge`、`ignoreTimeMerge`、`newTimeMerge`；旧值 `auto` 会归一化为 `""` |
 | `sync_update_delay` | `500` | 本地文件事件防抖延迟（毫秒） |
 | `binary_sync_limit_enabled` | `true` | 跳过超过 128 MiB 的文件 |
 | `concurrency_control_enabled` | `true` | 启用上传并发槽控制 |
 | `max_concurrent_uploads` | `3` | 最大并发上传数 |
-| `sync_exclude_folders` | `[]` | 需排除的 vault 相对路径文件夹 |
-| `sync_exclude_extensions` | `[]` | 需排除的文件扩展名 |
+| `sync_exclude_folders` | `[]` | 字面量 vault 相对路径，或任意层级的单层目录名 |
+| `sync_exclude_extensions` | `[]` | 需排除的文件扩展名（不区分大小写） |
+| `sync_exclude_whitelist` | `[]` | 覆盖普通排除规则的字面量 vault 相对路径 |
+| `config_sync_other_dirs` | `[]` | 除 `.obsidian` 外额外作为设置文件同步的 vault 目录 |
 | `startup_delay` | `0` | 首次连接前的等待秒数 |
-| `sync_timeout_seconds` | `60` | 单轮同步最大等待秒数 |
+| `auto_redirect_enabled` | `true` | 跟随 `/api/health` 重定向并采用新的运行时 API 地址 |
+| `sync_timeout_seconds` | `0` | 单轮同步最大等待秒数；`0` 使用内置默认 60 秒 |
 | `state_file` | 自动 | 覆盖默认状态文件路径 |
 
 默认状态文件路径：`~/.local/share/go-fast-note-sync/state.json`
+
+### 排除规则
+
+文件夹与白名单规则是区分大小写的字面量，不是正则表达式。Windows 分隔符和结尾斜杠会被归一化；匹配遵循路径段边界。例如 `cache` 会排除任意层级中名为 `cache` 的目录，而 `private/cache` 只排除该 vault 相对路径下的子树。
+
+点文件和点目录默认排除。白名单可恢复它们，并覆盖文件夹/扩展名排除规则；被排除的祖先目录仍可遍历，但本身不参与同步。以 `.tmp` 结尾、包含 `.tmp.`、或匹配内部 `.<filename>.tmp-*` 暂存名的临时路径，AppleDouble/`.DS_Store` 产物，以及敏感插件配置，均无法通过白名单恢复。`.obsidian` 保留其专属设置同步范围。这些过滤器不会自动删除已存在于远端的对应文件。
+
+这一点有意与官方插件的正则/默认不区分大小写匹配器不同。目标目录内的附件暂存设计上继承 Windows 目录 ACL，但其 Windows/SMB 运行时效果尚未经过独立验证。
 
 ## Token 与客户端标识
 
@@ -229,18 +245,18 @@ go build ./...
 ## 项目结构
 
 ```
-cmd/              CLI 入口（start / status / sync / init-config）
+.github/workflows/  CI（fmt、lint、race 测试、覆盖率门槛）与 tag 发布/GHCR 推送
+cmd/                CLI 入口（start / status / sync / init-config）
 internal/
-  config/         YAML 配置加载与默认值
-  state/          原子 JSON 状态持久化
-  hash/           与官方协议兼容的 rolling 内容/路径哈希
-  local/          watcher 到 sync 的事件契约
-  sync/           WebSocket 客户端、启动同步、协议处理器
-  watcher/        fsnotify 文件监听集成
-deploy/systemd/   systemd 用户服务单元
-deploy/docker/    Docker 多阶段构建与 Compose 部署
-docs/             设计文档与协议参考
-test/smoke/       集成冒烟测试套件
+  config/           YAML 配置加载、默认值与 ${ENV} 展开
+  hash/             与官方协议兼容的 rolling 内容/路径哈希
+  local/            watcher 到 sync 的事件契约
+  state/            原子 JSON 状态持久化
+  sync/             WebSocket 客户端、同步轮、协议处理器、分片传输、排除规则
+  watcher/          fsnotify 集成：防抖、重命名配对与 overflow 上报
+deploy/systemd/     systemd 用户服务单元
+deploy/docker/      多阶段 Dockerfile、Compose 文件与运维 README
+test/smoke/         真实服务 smoke 套件（用例、共享 harness、清理脚本）
 ```
 
 ## 协议说明

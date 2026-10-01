@@ -10,7 +10,7 @@ settings, restart, pending/checkpoint, and diagnostics.
 
 ## Prerequisites
 
-- Linux host with `bash`, `go`, `jq`, `curl`, `sha256sum`, `flock`, `awk`, `sed`, `grep`.
+- Linux host with `bash`, `go`, `curl`, `jq`, `awk`, `sed`, `grep`, `flock`, and coreutils (`mktemp`, `sha256sum`, `stat`, `timeout`).
 - A reachable backend whose health endpoint returns 2xx (or 404, the protocol's
   legacy reachable indicator).
 - `test/smoke/.env` exporting:
@@ -26,12 +26,15 @@ settings, restart, pending/checkpoint, and diagnostics.
 
 ```text
 test/smoke/
-├── .env                     # not in git; SYNC_API + SYNC_TOKEN
-├── README.md                # this file
+├── .env                        # not in git; SYNC_API + SYNC_TOKEN
+├── README.md                   # this file
+├── run-all.sh                  # runs cases 01-20 in order with per-case API cleanup
 ├── lib/
-│   ├── common.sh            # shared shell harness
-│   └── cleanup-vault.sh     # drain smoke/* + plugins/smoke-* from the shared vault
-├── cases/                   # one shell script per smoke case
+│   ├── common.sh               # shared shell harness
+│   ├── cleanup-vault.sh        # local drain of smoke/* + plugins/smoke-* from the shared vault
+│   ├── cleanup-vault-api.sh    # API-side drain run before each case by run-all.sh
+│   └── selftest-remote-oracle.sh  # offline check: suite discovery finds 20 cases
+├── cases/                      # one shell script per smoke case
 │   ├── 01-handshake-empty.sh
 │   ├── 02-startup-uplink.sh
 │   ├── 03-startup-downlink.sh
@@ -44,12 +47,15 @@ test/smoke/
 │   ├── 10-watch-rename.sh
 │   ├── 11-watch-delete.sh
 │   ├── 12-state-persist.sh
-│   ├── 13-reconnect.sh       # may be BLOCKED — see Plan.md M1.7.5
+│   ├── 13-reconnect.sh         # SIGSTOP/SIGCONT in-process reconnect
 │   ├── 14-sensitive-config-exclusion.sh
 │   ├── 15-status-offline.sh
 │   ├── 16-sync-oneshot.sh
-│   └── 17-paged-note-downlink.sh
-└── run/                     # not in git; per-case run artifacts (`<case>-<UTC>/`)
+│   ├── 17-paged-note-downlink.sh
+│   ├── 18-debug-disconnect-reconnect.sh
+│   ├── 19-attachment-commit-isolation.sh
+│   └── 20-exclusion-whitelist-reconcile.sh
+└── run/                        # not in git; per-case run artifacts (`<case>-<UTC>/`)
 ```
 
 ## How to run
@@ -102,6 +108,10 @@ assertion failure and leave the run dir intact for triage.
   only the HTTP API headers used by the smoke harness; it does not inject a `client_type:`
   field into the daemon YAML. Pass an explicit third argument to `bootstrap_client` to
   override the daemon's client type for a specific case.
+- `run-all.sh` drains the shared vault through the service HTTP API
+  (`lib/cleanup-vault-api.sh`) before each case, so cases do not depend on each
+  other's remote residue; pass `--no-cleanup` to skip that when debugging a
+  single case.
 - Vault growth is unbounded across many runs. To reset, run
   `bash test/smoke/lib/cleanup-vault.sh` — it boots a scratch daemon against
   the shared vault, `rm -rf`'s every `smoke/`-prefixed path locally, and lets
@@ -138,7 +148,6 @@ capabilities (see Plan.md / Documentation.md).
 | 16 | M1.11 | One-shot `sync` times out non-zero on a tiny deadline and exits successfully only after a real completed sync round. | single client | ✅ |
 | 17 | M2.0 | Service 3.6 paged downlink: checkpoint both clients past retained tombstones, seed more than 200 notes, observe multiple `NoteSyncPage` messages and cumulative ACKs, verify B materializes every note, and confirm graceful shutdown after the atomic-write burst. | two clients (A→B) | ✅ |
 | 18 | M2.2 | Deterministic reconnect via `--debug-disconnect-after` / `SMOKE_DEBUG_DISCONNECT_AFTER` (default `2s`): warm a checkpoint first, then force one socket close, reconnect through the existing path, reach `ws_count = warm + 2`, and complete a later sync round without SIGSTOP or manual network interruption. | single client | ✅ |
-
 | 19 | M2.4 | New/empty/overwritten attachment downloads, mode preservation, retained B state, and startup/watcher temporary-file exclusion inside a whitelist. Actual pre-replacement candidates have deterministic Go coverage; this Linux case does not validate Windows/SMB ACLs. | two clients (A→B) | ✅ |
 | 20 | M2.4 | Whitelisted hidden file/subtree and nested excluded-folder descendant remain scanned/watched; retained-state offline reconciliation deletes a genuinely missing file without deleting survivors. Excluded siblings and hard temporary artifacts stay absent remotely and on fresh B. | two clients (A→B) | ✅ |
 
