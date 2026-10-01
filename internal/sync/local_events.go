@@ -50,10 +50,21 @@ func (s *SyncService) ShouldWatchDir(raw string) bool {
 	if err != nil {
 		return false
 	}
+	if isFilesystemJunkPath(clean) {
+		return false
+	}
 	if clean == obsidianConfigDir || strings.HasPrefix(clean, obsidianConfigDir+"/") {
 		return true
 	}
-	return !s.isFolderPathExcluded(clean)
+	if s.cfg.ConfigSyncEnabled {
+		for _, dir := range s.cfg.ConfigSyncOtherDirs {
+			allowed, err := normalizeSyncPath(dir)
+			if err == nil && (literalPathPrefix(clean, allowed) || literalPathPrefix(allowed, clean)) {
+				return true
+			}
+		}
+	}
+	return s.shouldTraverseVaultDir(clean)
 }
 
 func (s *SyncService) HandleLocalModify(ev local.PathEvent) local.Result {

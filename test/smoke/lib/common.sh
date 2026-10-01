@@ -107,6 +107,23 @@ path_hash() {
   '
 }
 
+# Signed full-content protocol hash for smoke payloads <=10 MiB. SHA-256 is
+# used separately for downloaded-byte verification, not service contentHash.
+file_content_hash() {
+  local file="$1" size
+  size="$(stat -c '%s' "$file")"
+  [ "$size" -le 10485760 ] || die "file_content_hash: payload requires protocol sampling (>10 MiB)"
+  od -An -tu1 -v "$file" | awk '
+    {
+      for (i = 1; i <= NF; i++) hash = (hash * 31 + $i) % 4294967296
+    }
+    END {
+      if (hash >= 2147483648) hash -= 4294967296
+      printf "%.0f", hash
+    }
+  '
+}
+
 # server_path_record <note|file> <path> <out_json>
 # Writes the matching list record to <out_json> and returns 0 if present.
 server_path_record() {
@@ -132,6 +149,14 @@ server_path_record() {
       rm -f "${tmp}"
       return 2
     fi
+    # Service 3.6 serializes a successful empty list as null, with totalRows=0.
+    # Accept that explicit empty shape, but never an API error or missing data.
+    if ! jq -e '.code == 1 and .status == true and
+        ((.data.list | type) == "array" or
+         (.data.list == null and .data.pager.totalRows == 0))' "${tmp}" >/dev/null; then
+      rm -f "${tmp}"
+      return 2
+    fi
     if jq -e --arg p "$rel" '.data.list[]? | select(.path == $p)' "${tmp}" > "${out}"; then
       rm -f "${tmp}"
       return 0
@@ -144,9 +169,23 @@ server_path_record() {
   return 1
 }
 
+# Fail closed: an API/JSON failure must not count as proof of exclusion.
+assert_server_path_absent() {
+  local kind="$1" rel="$2" record status
+  record="$(mktemp "${TMPDIR:-/tmp}/smoke-absent-${kind}.XXXXXX")"
+  if server_path_record "$kind" "$rel" "$record"; then
+    rm -f "$record"
+    die "unexpected remote ${kind}: ${rel}"
+  else
+    status=$?
+    rm -f "$record"
+    [ "$status" -eq 1 ] || die "cannot verify remote absence: ${kind} ${rel} (API/JSON error)"
+  fi
+}
+
 # wait_for_server_path <note|file> <path> [<content_hash>] [<timeout_sec>=180]
-# For notes this verifies presence. For files, pass a sha256 content hash to
-# verify the server-side contentHash reported by /api/files.
+# For notes this verifies presence. For files, pass a signed protocol rolling
+# hash (file_content_hash), not SHA-256, to verify /api/files contentHash.
 wait_for_server_path() {
   local kind="$1" rel="$2" expected_hash="${3:-}" timeout="${4:-180}"
   local end actual record

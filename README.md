@@ -149,13 +149,22 @@ go-fast-note-sync sync --timeout 120s
 | `binary_sync_limit_enabled` | `true` | Skip files larger than 128 MiB |
 | `concurrency_control_enabled` | `true` | Enable upload slot control |
 | `max_concurrent_uploads` | `3` | Max parallel file uploads |
-| `sync_exclude_folders` | `[]` | Vault-relative folder paths to exclude |
-| `sync_exclude_extensions` | `[]` | File extensions to exclude |
+| `sync_exclude_folders` | `[]` | Literal root-relative paths, or single directory names at any depth |
+| `sync_exclude_extensions` | `[]` | File extensions to exclude (case-insensitive) |
+| `sync_exclude_whitelist` | `[]` | Literal root-relative paths overriding ordinary exclusions |
 | `startup_delay` | `0` | Seconds to wait before first connect |
 | `sync_timeout_seconds` | `60` | Max seconds to wait for a sync round |
 | `state_file` | auto | Override default state file path |
 
 Default state path: `~/.local/share/go-fast-note-sync/state.json`
+
+### Exclusion rules
+
+Folder and whitelist rules are case-sensitive literals, not regular expressions. Windows separators and trailing slashes are normalized; matches respect path-segment boundaries. For example, `cache` excludes directories named `cache` at any depth, while `private/cache` excludes only that root-relative subtree.
+
+Dot-files and dot-directories are excluded by default. Whitelists can restore them and override folder/extension exclusions; excluded ancestors remain traversable but are not themselves synchronized. Temporary paths ending in `.tmp`, containing `.tmp.`, or matching internal `.<filename>.tmp-*` staging names, AppleDouble/`.DS_Store` artifacts, and sensitive plugin configuration cannot be restored by a whitelist. `.obsidian` retains its dedicated settings scope. Existing remote artifacts are not automatically deleted by these filters.
+
+This intentionally differs from the official plugin’s regex/default case-insensitive matcher. Destination-directory attachment staging is intended to inherit Windows directory ACLs, but its Windows/SMB runtime effect has not yet been independently verified.
 
 ## Token & Client Type
 

@@ -9,48 +9,46 @@ import (
 
 var replaceFile = replaceFileImpl
 
-// stageFileInDestDir copies a verified staged file into the destination's own
-// directory so the final replaceFile renames within that directory and the
-// committed file inherits the destination folder's ACL — a same-volume rename
-// from elsewhere keeps the source folder's ACL, which locks SMB users out.
-func stageFileInDestDir(staged, destination string) (string, error) {
+// Create the commit candidate in the destination directory so Windows inherits
+// that directory's ACL, rather than retaining the temp-chunks directory ACL.
+// Chunk assembly and validation still happen outside the vault.
+func stageFileInDestDir(source, destination string) (staged string, err error) {
 	mode := os.FileMode(0o644)
 	if info, statErr := os.Stat(destination); statErr == nil {
 		mode = info.Mode().Perm()
 	} else if !os.IsNotExist(statErr) {
 		return "", fmt.Errorf("stat destination: %w", statErr)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+".tmp-*")
+	in, err := os.Open(source)
 	if err != nil {
-		return "", fmt.Errorf("create temporary file: %w", err)
+		return "", fmt.Errorf("open merged file: %w", err)
 	}
-	tmpPath := tmp.Name()
-	in, err := os.Open(staged)
+	defer in.Close()
+	out, err := os.CreateTemp(filepath.Dir(destination), "."+filepath.Base(destination)+".tmp-*")
 	if err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("open staged file: %w", err)
+		return "", fmt.Errorf("create destination staging: %w", err)
 	}
-	_, copyErr := io.Copy(tmp, in)
-	closeErr := in.Close()
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("chmod temporary file: %w", err)
+	staged = out.Name()
+	defer func() {
+		if err != nil {
+			_ = out.Close()
+			_ = os.Remove(staged)
+			staged = ""
+		}
+	}()
+	if _, err = io.Copy(out, in); err != nil {
+		return staged, fmt.Errorf("copy destination staging: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("write temporary file: %w", err)
+	if err = out.Chmod(mode); err != nil {
+		return staged, fmt.Errorf("chmod destination staging: %w", err)
 	}
-	if copyErr != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("copy staged data: %w", copyErr)
+	if err = out.Sync(); err != nil {
+		return staged, fmt.Errorf("sync destination staging: %w", err)
 	}
-	if closeErr != nil {
-		_ = os.Remove(tmpPath)
-		return "", fmt.Errorf("close staged file: %w", closeErr)
+	if err = out.Close(); err != nil {
+		return staged, fmt.Errorf("close destination staging: %w", err)
 	}
-	return tmpPath, nil
+	return staged, nil
 }
 
 func atomicWriteFile(destination string, content []byte) (err error) {

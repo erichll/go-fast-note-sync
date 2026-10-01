@@ -51,15 +51,14 @@ func TestIsVaultFileExcluded_WhitelistDoesNotResurrectJunk(t *testing.T) {
 	}
 }
 
-// Names that merely resemble junk must keep syncing. (".DS_Store_notes.md" is
-// dot-prefixed and therefore hidden from Obsidian's vault index — it is
-// covered by the dot-segment skip in hidden_and_tmp_paths_test.go, not by the
-// junk filter.)
+// Names that merely resemble junk must keep syncing.
 func TestIsVaultFileExcluded_LookalikesStillSync(t *testing.T) {
-	s := newTestService(nil, nil, "")
+	// Whitelisting overrides ordinary hidden names, but never actual junk.
+	s := newTestService(&config.Config{SyncExcludeWhitelist: []string{"Notes"}}, nil, "")
 	for _, rel := range []string{
 		"Templates/_Template.md",
 		"Notes/my._notes.md",
+		"Notes/.DS_Store_notes.md",
 		"Notes/DS_Store.md",
 		"_Inbox/Note.md",
 	} {

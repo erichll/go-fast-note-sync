@@ -139,6 +139,19 @@ capabilities (see Plan.md / Documentation.md).
 | 17 | M2.0 | Service 3.6 paged downlink: checkpoint both clients past retained tombstones, seed more than 200 notes, observe multiple `NoteSyncPage` messages and cumulative ACKs, verify B materializes every note, and confirm graceful shutdown after the atomic-write burst. | two clients (A→B) | ✅ |
 | 18 | M2.2 | Deterministic reconnect via `--debug-disconnect-after` / `SMOKE_DEBUG_DISCONNECT_AFTER` (default `2s`): warm a checkpoint first, then force one socket close, reconnect through the existing path, reach `ws_count = warm + 2`, and complete a later sync round without SIGSTOP or manual network interruption. | single client | ✅ |
 
+| 19 | M2.4 | New/empty/overwritten attachment downloads, mode preservation, retained B state, and startup/watcher temporary-file exclusion inside a whitelist. Actual pre-replacement candidates have deterministic Go coverage; this Linux case does not validate Windows/SMB ACLs. | two clients (A→B) | ✅ |
+| 20 | M2.4 | Whitelisted hidden file/subtree and nested excluded-folder descendant remain scanned/watched; retained-state offline reconciliation deletes a genuinely missing file without deleting survivors. Excluded siblings and hard temporary artifacts stay absent remotely and on fresh B. | two clients (A→B) | ✅ |
+
+M2.4 full real-service run `all-20260930T234235Z`: **20 PASS / 0 FAIL / 0 BLOCKED**, including 19–20. Binary service `contentHash` is a signed rolling hash (`file_content_hash` for smoke payloads <=10 MiB); disk bytes are independently checked with SHA-256. Remote absence accepts successful empty arrays or service `list:null` with `totalRows:0`, never API errors.
+
+Windows/SMB runtime verification is **SKIPPED — environment unavailable**, not PASS. When a human prepares a disposable NTFS-backed SMB share, run new and overwrite downloads as the intended service account, inspect inherited ACLs and bytes/access as a distinct SMB reader/writer, and check whitelist staging isolation and absence of sync loops. Record redacted artifacts and account roles; do not change directory ACLs or use a production share without separate approval.
+
+Offline-only oracle regression check (no service calls):
+
+```bash
+bash test/smoke/lib/selftest-remote-oracle.sh
+```
+
 ## Authoring a new case
 
 1. Copy the closest existing case under `cases/`.
@@ -147,8 +160,10 @@ capabilities (see Plan.md / Documentation.md).
    and bootstrap clients with `bootstrap_client "$RUN_DIR/a" "$VAULT"`.
 4. Use the existing helpers — `start_daemon`, `wait_for_sync_round`,
    `wait_for_server_note_hash`, `wait_for_server_path`,
-   `wait_for_disk_sha256`, `assert_sha256_match`, `stop_daemon` — instead of
+   `wait_for_disk_sha256`, `assert_sha256_match`, `assert_server_path_absent`,
+   `stop_daemon` — instead of
    rolling your own.
 5. End the script with `log "case <id> PASS"`; non-zero `set -e` exits handle
    the FAIL path implicitly.
 6. Add a row to the table above with the case's "what it proves" sentence.
+7. Update numeric discovery in `run-all.sh` and the expected count in `lib/selftest-remote-oracle.sh` when extending beyond the current 01–20 range.

@@ -638,8 +638,11 @@ func (s *SyncService) scanVault(isLoadLastTime bool) (*scanResult, error) {
 		}
 
 		if d.IsDir() {
-			if s.isFolderPathExcluded(relPath) {
+			if !s.shouldTraverseVaultDir(relPath) {
 				return filepath.SkipDir
+			}
+			if s.isFolderPathExcluded(relPath) {
+				return nil // Traverse only; do not sync the excluded ancestor.
 			}
 			localFolderPaths[relPath] = struct{}{}
 
@@ -967,137 +970,6 @@ func (s *SyncService) scanConfigs(vaultPath string, configHashMap map[string]sta
 	}
 
 	return nil
-}
-
-// isFilesystemJunkPath reports whether a vault-relative path is a filesystem
-// artifact rather than vault content: an AppleDouble sidecar ("._Foo"), a
-// ".DS_Store" index, or an Obsidian desktop atomic-write temp file.
-//
-// These must never sync. The Obsidian plugin has never tracked them, so any
-// that this client uploads become files the plugin can never delete, and they
-// accumulate on every other peer. Worse, an AppleDouble sidecar for a note is
-// named "._Note.md": without this rule it is classified as a note and its
-// binary payload is sent to the server as note text.
-//
-// Obsidian desktop saves notes via atomic write, transiently creating
-// "Note.md.tmp.<PID>.<hex>" before renaming; a watcher or scan can catch the
-// temp file mid-flight. The official plugin cannot express this via its own
-// filtering, so its users add a ".*\.tmp(\.|$)" sync exclusion — mirror that
-// rule here (case-insensitive, on the base name) so no configuration is
-// needed.
-func isFilesystemJunkPath(relPath string) bool {
-	base := relPath
-	if i := strings.LastIndexAny(relPath, `/\`); i >= 0 {
-		base = relPath[i+1:]
-	}
-	if strings.HasPrefix(base, "._") {
-		return true
-	}
-	if strings.EqualFold(base, ".DS_Store") {
-		return true
-	}
-	lower := strings.ToLower(base)
-	if strings.HasSuffix(lower, ".tmp") || strings.Contains(lower, ".tmp.") {
-		return true
-	}
-	return false
-}
-
-// matchFolderRule reports whether a sync_exclude_folders entry matches
-// relPath. Beyond the original root-prefix semantics (the entry itself and
-// everything under it), the rule also matches when any path segment equals
-// the entry. The official Obsidian plugin's users write rules like "_temp"
-// or "__pycache__" expecting its ".*(^|/)name(?=/|$)" regex semantics — a
-// match at any depth — and vaults commonly carry such directories nested
-// inside project folders, so prefix-only matching would silently sync them.
-func matchFolderRule(relPath, folder string) bool {
-	if folder == "" {
-		return false
-	}
-	if relPath == folder || strings.HasPrefix(relPath, folder+"/") {
-		return true
-	}
-	for _, seg := range strings.Split(relPath, "/") {
-		if seg == folder {
-			return true
-		}
-	}
-	return false
-}
-
-// hasDotSegment reports whether any "/"-separated segment of relPath starts
-// with a dot — a hidden entry in Obsidian terms.
-func hasDotSegment(relPath string) bool {
-	for _, seg := range strings.Split(relPath, "/") {
-		if strings.HasPrefix(seg, ".") {
-			return true
-		}
-	}
-	return false
-}
-
-// isVaultFileExcluded returns true if a vault-relative file path should be excluded.
-func (s *SyncService) isVaultFileExcluded(relPath string) bool {
-	// Checked ahead of the whitelist: a user exclusion whitelist must not be
-	// able to resurrect filesystem junk.
-	if isFilesystemJunkPath(relPath) {
-		return true
-	}
-	for _, w := range s.cfg.SyncExcludeWhitelist {
-		if relPath == w || strings.HasPrefix(relPath, w+"/") {
-			return false
-		}
-	}
-	// Obsidian never indexes dot-files or dot-directories, so the official
-	// plugin never syncs them (.git, .trash, Syncthing's .stfolder, ...). A
-	// CLI client walking the real filesystem would upload them, so skip any
-	// path containing a dot-segment. ".obsidian" is exempt: when config sync
-	// is enabled it is owned by the dedicated config-path logic (and can
-	// still be excluded via sync_exclude_folders when it is not).
-	if relPath != obsidianConfigDir && !strings.HasPrefix(relPath, obsidianConfigDir+"/") {
-		if hasDotSegment(relPath) {
-			return true
-		}
-	}
-	for _, folder := range s.cfg.SyncExcludeFolders {
-		if matchFolderRule(relPath, folder) {
-			return true
-		}
-	}
-	ext := strings.ToLower(filepath.Ext(relPath))
-	for _, excludeExt := range s.cfg.SyncExcludeExtensions {
-		e := strings.ToLower(excludeExt)
-		if !strings.HasPrefix(e, ".") {
-			e = "." + e
-		}
-		if ext == e {
-			return true
-		}
-	}
-	return false
-}
-
-// isFolderPathExcluded returns true if a vault-relative folder path should be excluded.
-func (s *SyncService) isFolderPathExcluded(relPath string) bool {
-	for _, w := range s.cfg.SyncExcludeWhitelist {
-		if relPath == w || strings.HasPrefix(relPath, w+"/") {
-			return false
-		}
-	}
-	// Mirror the dot-segment skip from isVaultFileExcluded: hidden folders
-	// must neither sync as folders nor be walked into (".obsidian" exempt,
-	// owned by the config-sync logic when enabled).
-	if relPath != obsidianConfigDir && !strings.HasPrefix(relPath, obsidianConfigDir+"/") {
-		if hasDotSegment(relPath) {
-			return true
-		}
-	}
-	for _, folder := range s.cfg.SyncExcludeFolders {
-		if matchFolderRule(relPath, folder) {
-			return true
-		}
-	}
-	return false
 }
 
 // --- Map copy helpers ---
