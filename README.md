@@ -27,10 +27,10 @@ The table lists combinations covered by the project's retained live smoke suite.
 
 | go-fast-note-sync | Obsidian client protocol baseline | fast-note-sync-service | Validation |
 |-------------------|-----------------------------------|------------------------|------------|
-| `v1.1.x` | Official client `2.4.0` | `3.6.0` | 17–20-case live smoke suite (`v1.1.0`–`v1.1.3`) |
+| `v1.1.x` | Official client `2.4.0` | `3.6.0` | 17–21-case live smoke suite (`v1.1.0`–`v1.1.4`) |
 | `v1.0.0` | Client `2.0.15` generation | Not pinned in historical records | 14-case live smoke suite; no explicit server-version claim |
 
-For new deployments, use the latest `v1.1.x` release (`v1.1.3`) with service `3.6.0`.
+For new deployments, use the latest `v1.1.x` release (`v1.1.4`) with service `3.6.0`.
 
 ## Installation
 
@@ -41,7 +41,7 @@ Download the pre-built binary for your platform from the [GitHub Releases page](
 **Linux x86-64 example:**
 
 ```bash
-VERSION=v1.1.3
+VERSION=v1.1.4
 curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/go-fast-note-sync_linux_amd64.tar.gz"
 curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/checksums.txt"
 tar -xzf go-fast-note-sync_linux_amd64.tar.gz
@@ -63,7 +63,7 @@ sha256sum -c checksums.txt --ignore-missing
 docker pull ghcr.io/erichll/go-fast-note-sync:latest
 ```
 
-The GHCR package is public — no `docker login` required. Replace `latest` with a specific tag (e.g. `v1.1.3`) for pinned deployments.
+The GHCR package is public — no `docker login` required. Replace `latest` with a specific tag (e.g. `v1.1.4`) for pinned deployments.
 
 > **Architecture:** published images are **linux/amd64 only**. Release archives additionally cover linux/arm64, darwin/amd64, darwin/arm64, and windows/amd64. On other architectures, build the image locally (see **[deploy/docker/README.md](deploy/docker/README.md)**).
 

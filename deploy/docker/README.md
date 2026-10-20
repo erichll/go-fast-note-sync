@@ -17,7 +17,7 @@ The published image is available from GitHub Container Registry and is public â€
 ```bash
 docker pull ghcr.io/erichll/go-fast-note-sync:latest
 # or a specific release tag:
-docker pull ghcr.io/erichll/go-fast-note-sync:v1.1.3
+docker pull ghcr.io/erichll/go-fast-note-sync:v1.1.4
 ```
 
 Use `ghcr.io/erichll/go-fast-note-sync:<tag>` wherever the image is referenced in Compose or Kubernetes configs.

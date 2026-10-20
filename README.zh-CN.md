@@ -27,10 +27,10 @@
 
 | go-fast-note-sync | Obsidian 客户端协议基线 | fast-note-sync-service | 验证情况 |
 |-------------------|--------------------------|------------------------|----------|
-| `v1.1.x` | 官方客户端 `2.4.0` | `3.6.0` | 17–20-case 真实服务 smoke（`v1.1.0`–`v1.1.3`） |
+| `v1.1.x` | 官方客户端 `2.4.0` | `3.6.0` | 17–21-case 真实服务 smoke（`v1.1.0`–`v1.1.4`） |
 | `v1.0.0` | 客户端 `2.0.15` 代际协议 | 历史记录未固定版本 | 14-case 真实服务 smoke；不声明明确服务端版本 |
 
-新部署推荐使用最新的 `v1.1.x` 版本（`v1.1.3`）搭配服务端 `3.6.0`。
+新部署推荐使用最新的 `v1.1.x` 版本（`v1.1.4`）搭配服务端 `3.6.0`。
 
 ## 安装
 
@@ -41,7 +41,7 @@
 **Linux x86-64 示例：**
 
 ```bash
-VERSION=v1.1.3
+VERSION=v1.1.4
 curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/go-fast-note-sync_linux_amd64.tar.gz"
 curl -LO "https://github.com/erichll/go-fast-note-sync/releases/download/${VERSION}/checksums.txt"
 tar -xzf go-fast-note-sync_linux_amd64.tar.gz
@@ -63,7 +63,7 @@ sha256sum -c checksums.txt --ignore-missing
 docker pull ghcr.io/erichll/go-fast-note-sync:latest
 ```
 
-GHCR 镜像已设为公开，无需 `docker login`。将 `latest` 替换为具体版本标签（如 `v1.1.3`）可固定版本。
+GHCR 镜像已设为公开，无需 `docker login`。将 `latest` 替换为具体版本标签（如 `v1.1.4`）可固定版本。
 
 > **架构说明：** 已发布镜像仅为 **linux/amd64**。发布归档额外覆盖 linux/arm64、darwin/amd64、darwin/arm64 和 windows/amd64。其他架构请参考 **[deploy/docker/README.md](deploy/docker/README.md)** 自行构建镜像。
 
