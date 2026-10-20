@@ -177,6 +177,11 @@ type SyncService struct {
 	lastSyncMtime       map[string]int64
 	lastSyncPathDeleted map[string]struct{}
 	lastSyncPathRenamed map[string]struct{}
+	echoSeq             uint64
+	localRechecks       int // queued/running post-write callbacks, protected by mu
+	echoWriteMeta       map[string]echoWriteState
+	echoDeleteMeta      map[string]echoTokenTimer
+	echoRenameMeta      map[string]echoRenameState
 	scannedNoteHashes   map[string]state.FileHashEntry
 	scannedFileHashes   map[string]state.FileHashEntry
 	scannedConfigHashes map[string]state.FileHashEntry
@@ -221,6 +226,9 @@ func NewSyncService(cfg *config.Config, st *state.State, statePath, version stri
 		lastSyncMtime:            make(map[string]int64),
 		lastSyncPathDeleted:      make(map[string]struct{}),
 		lastSyncPathRenamed:      make(map[string]struct{}),
+		echoWriteMeta:            make(map[string]echoWriteState),
+		echoDeleteMeta:           make(map[string]echoTokenTimer),
+		echoRenameMeta:           make(map[string]echoRenameState),
 		scannedNoteHashes:        make(map[string]state.FileHashEntry),
 		scannedFileHashes:        make(map[string]state.FileHashEntry),
 		scannedConfigHashes:      make(map[string]state.FileHashEntry),

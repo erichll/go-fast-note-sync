@@ -30,6 +30,6 @@ done
 smoke_api_get() { return 1; }
 if server_path_record file test.bin "$record"; then exit 1; else [ "$?" -eq 2 ]; fi
 if (assert_server_path_absent file test.bin) >/dev/null 2>&1; then exit 1; fi
-cases=("${SMOKE_DIR}"/cases/0[1-9]-*.sh "${SMOKE_DIR}"/cases/1[0-9]-*.sh "${SMOKE_DIR}"/cases/20-*.sh)
-[ "${#cases[@]}" -eq 20 ]
-printf 'Offline remote-oracle selftest PASS; suite discovers 20 cases. No live API called.\n'
+cases=("${SMOKE_DIR}"/cases/0[1-9]-*.sh "${SMOKE_DIR}"/cases/1[0-9]-*.sh "${SMOKE_DIR}"/cases/2[01]-*.sh)
+[ "${#cases[@]}" -eq 21 ]
+printf 'Offline remote-oracle selftest PASS; suite discovers 21 cases. No live API called.\n'

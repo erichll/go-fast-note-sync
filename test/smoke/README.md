@@ -28,12 +28,12 @@ settings, restart, pending/checkpoint, and diagnostics.
 test/smoke/
 ├── .env                        # not in git; SYNC_API + SYNC_TOKEN
 ├── README.md                   # this file
-├── run-all.sh                  # runs cases 01-20 in order with per-case API cleanup
+├── run-all.sh                  # runs cases 01-21 in order with per-case API cleanup
 ├── lib/
 │   ├── common.sh               # shared shell harness
 │   ├── cleanup-vault.sh        # local drain of smoke/* + plugins/smoke-* from the shared vault
 │   ├── cleanup-vault-api.sh    # API-side drain run before each case by run-all.sh
-│   └── selftest-remote-oracle.sh  # offline check: suite discovery finds 20 cases
+│   └── selftest-remote-oracle.sh  # offline check: suite discovery finds 21 cases
 ├── cases/                      # one shell script per smoke case
 │   ├── 01-handshake-empty.sh
 │   ├── 02-startup-uplink.sh
@@ -54,7 +54,8 @@ test/smoke/
 │   ├── 17-paged-note-downlink.sh
 │   ├── 18-debug-disconnect-reconnect.sh
 │   ├── 19-attachment-commit-isolation.sh
-│   └── 20-exclusion-whitelist-reconcile.sh
+│   ├── 20-exclusion-whitelist-reconcile.sh
+│   └── 21-atomic-note-replacement.sh
 └── run/                        # not in git; per-case run artifacts (`<case>-<UTC>/`)
 ```
 
@@ -150,6 +151,9 @@ capabilities (see Plan.md / Documentation.md).
 | 18 | M2.2 | Deterministic reconnect via `--debug-disconnect-after` / `SMOKE_DEBUG_DISCONNECT_AFTER` (default `2s`): warm a checkpoint first, then force one socket close, reconnect through the existing path, reach `ws_count = warm + 2`, and complete a later sync round without SIGSTOP or manual network interruption. | single client | ✅ |
 | 19 | M2.4 | New/empty/overwritten attachment downloads, mode preservation, retained B state, and startup/watcher temporary-file exclusion inside a whitelist. Actual pre-replacement candidates have deterministic Go coverage; this Linux case does not validate Windows/SMB ACLs. | two clients (A→B) | ✅ |
 | 20 | M2.4 | Whitelisted hidden file/subtree and nested excluded-folder descendant remain scanned/watched; retained-state offline reconciliation deletes a genuinely missing file without deleting survivors. Excluded siblings and hard temporary artifacts stay absent remotely and on fresh B. | two clients (A→B) | ✅ |
+| 21 | M2.5 | Atomic note saves at 500/2000ms debounce converge through a receiving client; real edits, forward/reverse moves and deletes still synchronize, without uploading staging artifacts. Exact zero-Delete/zero-echo frame assertions use native Go tests; HTTP polling cannot establish absence of transient deletion. | two clients (A↔B) | ✅ |
+
+M2.5 full real-service run `all-20261020T092917Z`: **21 PASS / 0 FAIL / 0 BLOCKED**, including case 21 at both 500/2000ms. The human executed the suite; all case and cleanup logs plus the current-source smoke binary were independently checked. Case 21 proves convergence and genuine local operations; exact transient-delete/echo safety remains covered by native Go frame assertions.
 
 M2.4 full real-service run `all-20260930T234235Z`: **20 PASS / 0 FAIL / 0 BLOCKED**, including 19–20. Binary service `contentHash` is a signed rolling hash (`file_content_hash` for smoke payloads <=10 MiB); disk bytes are independently checked with SHA-256. Remote absence accepts successful empty arrays or service `list:null` with `totalRows:0`, never API errors.
 
@@ -175,4 +179,4 @@ bash test/smoke/lib/selftest-remote-oracle.sh
 5. End the script with `log "case <id> PASS"`; non-zero `set -e` exits handle
    the FAIL path implicitly.
 6. Add a row to the table above with the case's "what it proves" sentence.
-7. Update numeric discovery in `run-all.sh` and the expected count in `lib/selftest-remote-oracle.sh` when extending beyond the current 01–20 range.
+7. Update numeric discovery in `run-all.sh` and the expected count in `lib/selftest-remote-oracle.sh` when extending beyond the current 01–21 range.

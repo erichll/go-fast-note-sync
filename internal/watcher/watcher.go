@@ -65,6 +65,7 @@ type pendingRename struct {
 	oldRel string
 	oldAbs string
 	isDir  bool
+	gen    uint64
 	timer  *time.Timer
 	done   sync.Once
 }
@@ -84,6 +85,7 @@ type Watcher struct {
 	mu            sync.Mutex
 	watchedDirs   map[string]string
 	timers        map[string]*scheduled
+	pathGen       map[string]uint64
 	pendingRename *pendingRename
 	closed        bool
 }
@@ -121,6 +123,7 @@ func newWithBackend(vaultPath string, syncUpdateDelay int, handler local.Handler
 		cancel:      cancel,
 		watchedDirs: make(map[string]string),
 		timers:      make(map[string]*scheduled),
+		pathGen:     make(map[string]uint64),
 	}
 	if err := w.addRecursive(root); err != nil {
 		cancel()
@@ -189,12 +192,54 @@ func (w *Watcher) loop() {
 	}
 }
 
+// isInternalStagingPath matches atomicWriteFile / stageFileInDestDir temporary
+// files (.<basename>.tmp-<random>) so their RENAME/CREATE events cannot occupy
+// pendingRename or cross-pair with unrelated files.
+func isInternalStagingPath(rel string) bool {
+	for _, part := range strings.Split(strings.ReplaceAll(rel, "\\", "/"), "/") {
+		lower := strings.ToLower(part)
+		if strings.HasPrefix(part, ".") && strings.Contains(lower, ".tmp-") {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *Watcher) confirmMissingOnDisk(abs string) bool {
+	_, err := os.Lstat(abs)
+	return errors.Is(err, os.ErrNotExist)
+}
+
+func (w *Watcher) isCurrentGen(rel string, gen uint64) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.closed && w.pathGen[rel] == gen
+}
+
+func (w *Watcher) cancelTimerLocked(key string) {
+	if old := w.timers[key]; old != nil {
+		if old.timer.Stop() {
+			old.done.Do(w.wg.Done)
+		}
+		delete(w.timers, key)
+	}
+}
+
+func (w *Watcher) cancelPendingRenameLocked() {
+	if pr := w.pendingRename; pr != nil {
+		w.pendingRename = nil
+		if pr.timer.Stop() {
+			pr.done.Do(w.wg.Done)
+		}
+	}
+}
+
 func (w *Watcher) handleEvent(ev fsnotify.Event) {
 	if ev.Name == "" {
 		return
 	}
 	rel, err := w.rel(ev.Name)
-	if err != nil || rel == "." {
+	if err != nil || rel == "." || isInternalStagingPath(rel) {
 		return
 	}
 	if ev.Op&fsnotify.Chmod != 0 && ev.Op&^(fsnotify.Chmod) == 0 {
@@ -204,11 +249,23 @@ func (w *Watcher) handleEvent(ev fsnotify.Event) {
 		w.handleRenameAway(ev.Name, rel)
 		return
 	}
-	if ev.Op&fsnotify.Remove != 0 {
+	if ev.Op&fsnotify.Remove != 0 && ev.Op&(fsnotify.Create|fsnotify.Write) == 0 {
 		isDir := w.removeKnownDir(ev.Name)
-		w.schedulePath("delete", rel, isDir, func() {
+		abs := ev.Name
+		w.mu.Lock()
+		w.cancelTimerLocked("modify:" + rel)
+		if w.pendingRename != nil && w.pendingRename.oldRel == rel {
+			w.cancelPendingRenameLocked()
+		}
+		w.pathGen[rel]++
+		gen := w.pathGen[rel]
+		w.schedulePathLocked("delete", rel, isDir, func() {
+			if !w.isCurrentGen(rel, gen) || !w.confirmMissingOnDisk(abs) || !w.isCurrentGen(rel, gen) {
+				return
+			}
 			w.handler.HandleLocalDelete(local.PathEvent{Path: rel, IsDir: isDir})
 		})
+		w.mu.Unlock()
 		return
 	}
 	if ev.Op&fsnotify.Create != 0 {
@@ -221,16 +278,27 @@ func (w *Watcher) handleEvent(ev fsnotify.Event) {
 		if w.pairRename(ev.Name, rel, isDir) {
 			return
 		}
-		w.schedulePath("modify", rel, isDir, func() {
+		w.mu.Lock()
+		w.cancelTimerLocked("delete:" + rel)
+		w.pathGen[rel]++
+		w.schedulePathLocked("modify", rel, isDir, func() {
 			w.handler.HandleLocalModify(local.PathEvent{Path: rel, IsDir: isDir})
 		})
+		w.mu.Unlock()
 		return
 	}
 	if ev.Op&fsnotify.Write != 0 {
 		isDir := w.statIsDir(ev.Name)
-		w.schedulePath("modify", rel, isDir, func() {
+		w.mu.Lock()
+		w.cancelTimerLocked("delete:" + rel)
+		if w.pendingRename != nil && w.pendingRename.oldRel == rel {
+			w.cancelPendingRenameLocked()
+		}
+		w.pathGen[rel]++
+		w.schedulePathLocked("modify", rel, isDir, func() {
 			w.handler.HandleLocalModify(local.PathEvent{Path: rel, IsDir: isDir})
 		})
+		w.mu.Unlock()
 	}
 }
 
@@ -240,17 +308,23 @@ func (w *Watcher) handleRenameAway(abs, rel string) {
 	if w.pendingRename != nil {
 		w.flushPendingRenameLocked()
 	}
-	pr := &pendingRename{oldRel: rel, oldAbs: abs, isDir: isDir}
+	w.cancelTimerLocked("modify:" + rel)
+	w.pathGen[rel]++
+	gen := w.pathGen[rel]
+	pr := &pendingRename{oldRel: rel, oldAbs: abs, isDir: isDir, gen: gen}
 	w.wg.Add(1)
 	pr.timer = time.AfterFunc(w.delay, func() {
 		defer pr.done.Do(w.wg.Done)
 		w.mu.Lock()
-		if w.pendingRename != pr || w.closed {
+		if w.pendingRename != pr || w.closed || w.pathGen[rel] != gen {
 			w.mu.Unlock()
 			return
 		}
 		w.pendingRename = nil
 		w.mu.Unlock()
+		if !w.confirmMissingOnDisk(abs) || !w.isCurrentGen(rel, gen) {
+			return
+		}
 		w.handler.HandleLocalDelete(local.PathEvent{Path: rel, IsDir: isDir})
 	})
 	w.pendingRename = pr
@@ -259,6 +333,7 @@ func (w *Watcher) handleRenameAway(abs, rel string) {
 
 func (w *Watcher) pairRename(_ string, newRel string, newIsDir bool) bool {
 	w.mu.Lock()
+	w.cancelTimerLocked("delete:" + newRel)
 	pr := w.pendingRename
 	if pr == nil {
 		w.mu.Unlock()
@@ -270,9 +345,14 @@ func (w *Watcher) pairRename(_ string, newRel string, newIsDir bool) bool {
 	}
 	oldRel := pr.oldRel
 	oldIsDir := pr.isDir
-	w.mu.Unlock()
-
-	w.schedulePath("rename", oldRel+"->"+newRel, oldIsDir || newIsDir, func() {
+	if oldRel == newRel {
+		w.mu.Unlock()
+		return false
+	}
+	w.cancelTimerLocked("modify:" + oldRel)
+	w.pathGen[oldRel]++
+	w.pathGen[newRel]++
+	w.schedulePathLocked("rename", oldRel+"->"+newRel, oldIsDir || newIsDir, func() {
 		w.handler.HandleLocalRename(local.RenameEvent{
 			OldPath:  oldRel,
 			NewPath:  newRel,
@@ -280,6 +360,7 @@ func (w *Watcher) pairRename(_ string, newRel string, newIsDir bool) bool {
 			NewIsDir: newIsDir,
 		})
 	})
+	w.mu.Unlock()
 	return true
 }
 
@@ -293,16 +374,15 @@ func (w *Watcher) flushPendingRenameLocked() {
 		pr.done.Do(w.wg.Done)
 	}
 	oldRel := pr.oldRel
+	oldAbs := pr.oldAbs
 	isDir := pr.isDir
+	gen := pr.gen
 	w.schedulePathLocked("delete", oldRel, isDir, func() {
+		if !w.isCurrentGen(oldRel, gen) || !w.confirmMissingOnDisk(oldAbs) || !w.isCurrentGen(oldRel, gen) {
+			return
+		}
 		w.handler.HandleLocalDelete(local.PathEvent{Path: oldRel, IsDir: isDir})
 	})
-}
-
-func (w *Watcher) schedulePath(kind, rel string, isDir bool, fn func()) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.schedulePathLocked(kind, rel, isDir, fn)
 }
 
 func (w *Watcher) schedulePathLocked(kind, rel string, _ bool, fn func()) {
@@ -310,11 +390,7 @@ func (w *Watcher) schedulePathLocked(kind, rel string, _ bool, fn func()) {
 		return
 	}
 	key := kind + ":" + rel
-	if old := w.timers[key]; old != nil {
-		if old.timer.Stop() {
-			old.done.Do(w.wg.Done)
-		}
-	}
+	w.cancelTimerLocked(key)
 	s := &scheduled{}
 	w.wg.Add(1)
 	s.timer = time.AfterFunc(w.delay, func() {

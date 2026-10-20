@@ -266,3 +266,79 @@ func TestCloseCancelsPendingTimers(t *testing.T) {
 	}
 	assertNoEvent(t, h.events)
 }
+
+func TestSamePathRemoveThenCreateCancelsStaleDelete(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.md")
+	if err := os.WriteFile(path, []byte("updated"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fb := newFakeBackend()
+	h := newRecordingHandler()
+	w, err := newWithBackend(root, 15, h, fb)
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer w.Close()
+
+	fb.events <- fsnotify.Event{Name: path, Op: fsnotify.Remove}
+	fb.events <- fsnotify.Event{Name: path, Op: fsnotify.Create}
+	if ev := waitEvent(t, h.events); ev != "modify:a.md:file" {
+		t.Fatalf("event = %s, want modify:a.md:file", ev)
+	}
+	assertNoEvent(t, h.events)
+}
+
+func TestDeleteCallbackSkipsWhenFileExistsOnDisk(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "a.md")
+	if err := os.WriteFile(path, []byte("still-here"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fb := newFakeBackend()
+	h := newRecordingHandler()
+	w, err := newWithBackend(root, 10, h, fb)
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer w.Close()
+
+	fb.events <- fsnotify.Event{Name: path, Op: fsnotify.Remove}
+	assertNoEvent(t, h.events)
+}
+
+func TestInternalStagingPathDoesNotStealPendingRename(t *testing.T) {
+	root := t.TempDir()
+	bPath := filepath.Join(root, "b.md")
+	newPath := filepath.Join(root, "new.md")
+	if err := os.WriteFile(bPath, []byte("b"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newPath, []byte("new"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fb := newFakeBackend()
+	h := newRecordingHandler()
+	w, err := newWithBackend(root, 20, h, fb)
+	if err != nil {
+		t.Fatalf("new watcher: %v", err)
+	}
+	defer w.Close()
+
+	// 1. Internal .tmp-* RENAME must not pair with b.md CREATE.
+	fb.events <- fsnotify.Event{Name: filepath.Join(root, ".a.md.tmp-deadbeef"), Op: fsnotify.Rename}
+	fb.events <- fsnotify.Event{Name: bPath, Op: fsnotify.Create}
+	if ev := waitEvent(t, h.events); ev != "modify:b.md:file" {
+		t.Fatalf("event = %s, want modify:b.md:file", ev)
+	}
+
+	// 2. Interleaved .tmp-* events must not disrupt real old.md -> new.md rename pairing.
+	fb.events <- fsnotify.Event{Name: filepath.Join(root, "old.md"), Op: fsnotify.Rename}
+	fb.events <- fsnotify.Event{Name: filepath.Join(root, ".a.md.tmp-cafebabe"), Op: fsnotify.Create}
+	fb.events <- fsnotify.Event{Name: filepath.Join(root, ".a.md.tmp-cafebabe"), Op: fsnotify.Rename}
+	fb.events <- fsnotify.Event{Name: newPath, Op: fsnotify.Create}
+	if ev := waitEvent(t, h.events); ev != "rename:old.md->new.md:file" {
+		t.Fatalf("event = %s, want rename:old.md->new.md:file", ev)
+	}
+	assertNoEvent(t, h.events)
+}

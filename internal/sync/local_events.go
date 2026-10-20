@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	h "github.com/erichll/go-fast-note-sync/internal/hash"
 	"github.com/erichll/go-fast-note-sync/internal/local"
 )
 
@@ -37,6 +38,121 @@ func (s *SyncService) localReady() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.isOpen && s.isAuth
+}
+
+func (s *SyncService) computeLocalCategoryHash(abs string, cat localCategory) (string, bool) {
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		return "", false
+	}
+	switch cat {
+	case localCategoryNote:
+		return h.Text(string(b)), true
+	case localCategoryFile, localCategorySetting:
+		return h.FileContent(b), true
+	default:
+		return "", false
+	}
+}
+
+func (s *SyncService) isWriteEchoed(rp resolvedPath, cat localCategory) bool {
+	for {
+		s.mu.Lock()
+		_, inMap := s.lastSyncMtime[rp.Rel]
+		meta, hasMeta := s.echoWriteMeta[rp.Rel]
+		s.mu.Unlock()
+
+		if !inMap {
+			return false
+		}
+		if !hasMeta {
+			// Legacy marker-only callers; new file operations carry metadata.
+			return true
+		}
+		if !meta.hasSnap || meta.hash == "" {
+			// Folder creation has no content hash. Unknown file content,
+			// including an mtime-only reply, is never proof of an echo.
+			return cat == localCategoryFolder && !meta.inFlight
+		}
+
+		info, err := os.Stat(rp.Abs)
+		if err != nil {
+			return false
+		}
+		sameAsRemote, ambiguous := false, false
+		if meta.size == 0 || info.Size() == meta.size || (meta.inFlight && meta.prevHash != "") {
+			if gotHash, ok := s.computeLocalCategoryHash(rp.Abs, cat); ok {
+				sameAsRemote = gotHash == meta.hash
+				ambiguous = !sameAsRemote && meta.inFlight && meta.prevHash != "" && gotHash == meta.prevHash
+			}
+		}
+		s.mu.Lock()
+		cur, current := s.echoWriteMeta[rp.Rel]
+		if !current || cur.token != meta.token || cur.inFlight != meta.inFlight {
+			s.mu.Unlock()
+			// Hashing can overlap another replacement or finalization. Do
+			// not classify new bytes using an obsolete operation snapshot.
+			continue
+		}
+		if ambiguous {
+			// It may be a late old-version echo OR a genuine undo after
+			// replacement. Retain it for recheck after finalization/abort.
+			cur.recheck = true
+			s.echoWriteMeta[rp.Rel] = cur
+			s.mu.Unlock()
+			return true
+		}
+		s.mu.Unlock()
+		if !sameAsRemote && !meta.inFlight {
+			s.abortRemoteWrite(rp.Rel, meta.token)
+		}
+		return sameAsRemote
+	}
+}
+
+func (s *SyncService) isDeleteEchoed(rel string) bool {
+	s.mu.Lock()
+	_, delEcho := s.lastSyncPathDeleted[rel]
+	renMeta, hasRenMeta := s.echoRenameMeta[rel]
+	_, renInMap := s.lastSyncPathRenamed[rel]
+	renOldEcho := renInMap && hasRenMeta && renMeta.oldRel == rel
+	echoed := delEcho || renOldEcho
+	s.mu.Unlock()
+	return echoed
+}
+
+func (s *SyncService) isRenameEchoed(oldRP, newRP resolvedPath, oldCat, newCat localCategory) bool {
+	s.mu.Lock()
+	_, oldInMap := s.lastSyncPathRenamed[oldRP.Rel]
+	_, newInMap := s.lastSyncPathRenamed[newRP.Rel]
+	oldMeta, hasOldMeta := s.echoRenameMeta[oldRP.Rel]
+	newMeta, hasNewMeta := s.echoRenameMeta[newRP.Rel]
+	_, writeInMap := s.lastSyncMtime[newRP.Rel]
+	s.mu.Unlock()
+
+	oldEcho := false
+	if oldInMap {
+		if !hasOldMeta {
+			oldEcho = true
+		} else if oldMeta.oldRel == oldRP.Rel && oldMeta.newRel == newRP.Rel {
+			oldEcho = true
+		}
+	}
+	newEcho := false
+	if newInMap {
+		if !hasNewMeta {
+			newEcho = true
+		} else if newMeta.oldRel == oldRP.Rel && newMeta.newRel == newRP.Rel {
+			newEcho = true
+		}
+	}
+	remoteWriteEcho := false
+	// A destination write marker can explain an internal staging rename,
+	// but not a real local move from another synchronized source path.
+	if writeInMap && newRP.Rel != "" && oldCat == localCategorySkip {
+		remoteWriteEcho = s.isWriteEchoed(newRP, newCat)
+	}
+	return oldEcho || newEcho || remoteWriteEcho
 }
 
 // ShouldWatchDir lets the watcher skip excluded directory trees while keeping
@@ -75,24 +191,27 @@ func (s *SyncService) HandleLocalModify(ev local.PathEvent) local.Result {
 	if err != nil {
 		return localSkipped()
 	}
-	s.mu.Lock()
-	_, echoed := s.lastSyncMtime[rp.Rel]
-	s.mu.Unlock()
-	if echoed {
+	cat := s.localCategory(rp.Rel, ev.IsDir)
+	if s.isWriteEchoed(rp, cat) {
+		return localSkipped()
+	}
+	if cat == localCategorySkip {
 		return localSkipped()
 	}
 
 	if ev.IsDir {
-		if s.localCategory(rp.Rel, true) != localCategoryFolder {
+		if info, err := os.Stat(rp.Abs); err != nil || !info.IsDir() {
 			return localSkipped()
 		}
+		s.clearDeleteEcho(rp.Rel)
 		return localAttempt(s.SendFolderModify(rp.Rel))
 	}
 
 	if _, err := os.Stat(rp.Abs); err != nil {
 		return localSkipped()
 	}
-	switch s.localCategory(rp.Rel, false) {
+	s.clearDeleteEcho(rp.Rel)
+	switch cat {
 	case localCategoryNote:
 		return localAttempt(s.sendFileContentModify("NoteModify", rp, s.setPendingNoteModify, nil))
 	case localCategoryFile:
@@ -112,25 +231,18 @@ func (s *SyncService) HandleLocalDelete(ev local.PathEvent) local.Result {
 	if err != nil {
 		return localSkipped()
 	}
-	s.mu.Lock()
-	_, echoed := s.lastSyncPathDeleted[rp.Rel]
-	s.mu.Unlock()
-	if echoed {
+	if s.isDeleteEchoed(rp.Rel) {
 		return localSkipped()
 	}
-
-	switch s.localCategory(rp.Rel, ev.IsDir) {
-	case localCategoryNote:
-		return localAttempt(s.SendNoteDelete(rp.Rel))
-	case localCategoryFile:
-		return localAttempt(s.SendFileDelete(rp.Rel))
-	case localCategorySetting:
-		return localAttempt(s.SendSettingDelete(rp.Rel))
-	case localCategoryFolder:
-		return localAttempt(s.SendFolderDelete(rp.Rel))
-	default:
+	cat := s.localCategory(rp.Rel, ev.IsDir)
+	if cat == localCategorySkip {
 		return localSkipped()
 	}
+	attempted, sendErr := s.sendLocalDeleteForCategory(cat, rp)
+	if !attempted {
+		return localSkipped()
+	}
+	return localAttempt(sendErr)
 }
 
 func (s *SyncService) HandleLocalRename(ev local.RenameEvent) local.Result {
@@ -142,13 +254,8 @@ func (s *SyncService) HandleLocalRename(ev local.RenameEvent) local.Result {
 	if oldErr != nil && newErr != nil {
 		return localSkipped()
 	}
-	s.mu.Lock()
-	_, oldEcho := s.lastSyncPathRenamed[oldRP.Rel]
-	_, newEcho := s.lastSyncPathRenamed[newRP.Rel]
-	_, remoteWriteEcho := s.lastSyncMtime[newRP.Rel]
-	s.mu.Unlock()
-	if oldEcho || newEcho || remoteWriteEcho {
-		return localSkipped()
+	if oldErr == nil && newErr == nil && oldRP.Rel == newRP.Rel {
+		return s.HandleLocalModify(local.PathEvent{Path: newRP.Rel, IsDir: ev.NewIsDir})
 	}
 
 	oldCat := localCategorySkip
@@ -159,9 +266,29 @@ func (s *SyncService) HandleLocalRename(ev local.RenameEvent) local.Result {
 	if newErr == nil {
 		newCat = s.localCategory(newRP.Rel, ev.NewIsDir)
 	}
+	if s.isRenameEchoed(oldRP, newRP, oldCat, newCat) {
+		return localSkipped()
+	}
+
+	if oldCat != localCategorySkip {
+		missing, statErr := pathConfirmedMissing(oldRP.Abs)
+		if statErr != nil {
+			log.Printf("[sync] skip local rename old path %q: stat error: %v", oldRP.Rel, statErr)
+			oldCat = localCategorySkip
+		} else if !missing {
+			log.Printf("[sync] local rename old path %q still exists; degrading to modify on new path", oldRP.Rel)
+			oldCat = localCategorySkip
+		}
+	}
 
 	if oldCat == localCategorySkip && newCat == localCategorySkip {
 		return localSkipped()
+	}
+	// We have classified a real local move (not a remote echo). Once it
+	// changes the path identity, old remote evidence cannot suppress a later
+	// undo/redo even when the same bytes return to the same destination.
+	if oldCat != localCategorySkip || newCat != localCategorySkip {
+		s.invalidateLocalRenameEchoes(oldRP.Rel, newRP.Rel)
 	}
 	if oldCat == newCat && oldCat != localCategorySkip {
 		switch oldCat {
@@ -170,7 +297,7 @@ func (s *SyncService) HandleLocalRename(ev local.RenameEvent) local.Result {
 		case localCategoryFile:
 			return localAttempt(s.SendFileRename(oldRP.Rel, newRP.Rel))
 		case localCategorySetting:
-			return localAttempt(s.SendSettingRename(oldRP.Rel, newRP.Rel))
+			return s.sendVerifiedSettingRename(oldRP, newRP)
 		case localCategoryFolder:
 			return localAttempt(s.SendFolderRename(oldRP.Rel, newRP.Rel))
 		}
@@ -178,18 +305,33 @@ func (s *SyncService) HandleLocalRename(ev local.RenameEvent) local.Result {
 
 	attempted := false
 	if oldCat != localCategorySkip {
-		attempted = true
-		if err := s.sendLocalDeleteForCategory(oldCat, oldRP.Rel); err != nil {
-			return localAttempt(err)
+		delAttempted, err := s.sendLocalDeleteForCategory(oldCat, oldRP)
+		if delAttempted {
+			attempted = true
+		}
+		if err != nil {
+			return local.Result{Attempted: delAttempted, Err: err}
 		}
 	}
 	if newCat != localCategorySkip {
-		attempted = true
-		if err := s.sendLocalModifyForCategory(newCat, newRP); err != nil {
-			return localAttempt(err)
+		modAttempted, err := s.sendLocalModifyForCategory(newCat, newRP)
+		if modAttempted {
+			attempted = true
+		}
+		if err != nil {
+			return local.Result{Attempted: attempted, Err: err}
 		}
 	}
 	return local.Result{Attempted: attempted}
+}
+
+func (s *SyncService) sendVerifiedSettingRename(oldRP, newRP resolvedPath) local.Result {
+	delAttempted, err := s.sendLocalDeleteForCategory(localCategorySetting, oldRP)
+	if err != nil {
+		return local.Result{Attempted: delAttempted, Err: err}
+	}
+	modAttempted, err := s.sendLocalModifyForCategory(localCategorySetting, newRP)
+	return local.Result{Attempted: delAttempted || modAttempted, Err: err}
 }
 
 func (s *SyncService) localCategory(rel string, isDir bool) localCategory {
@@ -214,41 +356,110 @@ func (s *SyncService) localCategory(rel string, isDir bool) localCategory {
 	return localCategoryFile
 }
 
-func (s *SyncService) sendLocalDeleteForCategory(cat localCategory, rel string) error {
+func (s *SyncService) sendLocalDeleteForCategory(cat localCategory, rp resolvedPath) (bool, error) {
+	var action string
 	switch cat {
 	case localCategoryNote:
-		return s.SendNoteDelete(rel)
+		action = "NoteDelete"
 	case localCategoryFile:
-		return s.SendFileDelete(rel)
+		action = "FileDelete"
 	case localCategorySetting:
-		return s.SendSettingDelete(rel)
+		if !s.isConfigSyncPathAllowed(rp.Rel) {
+			return false, nil
+		}
+		action = "SettingDelete"
 	case localCategoryFolder:
-		return s.SendFolderDelete(rel)
+		action = "FolderDelete"
 	default:
-		return nil
+		return false, nil
 	}
+
+	unlockPre := s.lockPath(rp.Rel)
+	if s.isDeleteEchoed(rp.Rel) {
+		unlockPre()
+		return false, nil
+	}
+	missing, statErr := pathConfirmedMissing(rp.Abs)
+	if statErr != nil {
+		unlockPre()
+		log.Printf("[sync] skip local delete for %q: stat error: %v", rp.Rel, statErr)
+		return false, statErr
+	}
+	if !missing {
+		unlockPre()
+		log.Printf("[sync] skip local delete for existing path %q", rp.Rel)
+		return false, nil
+	}
+	s.clearRemoteWrite(rp.Rel)
+	if cat == localCategoryFile {
+		s.cancelUpload(rp.Rel)
+	}
+	unlockPre()
+
+	usesSlot := cat != localCategoryFolder
+	if usesSlot {
+		s.concurrency.WaitForSlot(rp.Rel, false, 0)
+	}
+
+	unlockSend := s.lockPath(rp.Rel)
+	defer unlockSend()
+	if s.isDeleteEchoed(rp.Rel) {
+		if usesSlot {
+			s.concurrency.ReleaseSlot(rp.Rel)
+		}
+		return false, nil
+	}
+	if missing, statErr := pathConfirmedMissing(rp.Abs); statErr != nil || !missing {
+		if usesSlot {
+			s.concurrency.ReleaseSlot(rp.Rel)
+		}
+		return false, statErr
+	}
+	s.clearRemoteWrite(rp.Rel)
+	if err := s.Send(action, map[string]interface{}{"vault": s.cfg.Vault, "path": rp.Rel, "pathHash": h.Path(rp.Rel)}); err != nil {
+		if usesSlot {
+			s.concurrency.ReleaseSlot(rp.Rel)
+		}
+		return true, err
+	}
+	s.mu.Lock()
+	switch cat {
+	case localCategoryNote:
+		s.pendingNoteDeleteAcks[rp.Rel] = struct{}{}
+	case localCategoryFile:
+		s.pendingFileDeleteAcks[rp.Rel] = struct{}{}
+	case localCategorySetting:
+		s.pendingConfigDeleteAcks[rp.Rel] = struct{}{}
+	case localCategoryFolder:
+		s.pendingDeleteFolderPaths[rp.Rel] = struct{}{}
+	}
+	s.mu.Unlock()
+	return true, nil
 }
 
-func (s *SyncService) sendLocalModifyForCategory(cat localCategory, rp resolvedPath) error {
-	if cat != localCategoryFolder {
-		if _, err := os.Stat(rp.Abs); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			return err
+func (s *SyncService) sendLocalModifyForCategory(cat localCategory, rp resolvedPath) (bool, error) {
+	info, err := os.Stat(rp.Abs)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
 		}
+		return false, err
 	}
+	if cat == localCategoryFolder && !info.IsDir() {
+		return false, nil
+	}
+	s.clearDeleteEcho(rp.Rel)
 	switch cat {
 	case localCategoryNote:
-		return s.sendFileContentModify("NoteModify", rp, s.setPendingNoteModify, nil)
+		return true, s.sendFileContentModify("NoteModify", rp, s.setPendingNoteModify, nil)
 	case localCategoryFile:
-		return s.SendFileUploadCheck(rp.Rel)
+		return true, s.SendFileUploadCheck(rp.Rel)
 	case localCategorySetting:
-		return s.sendFileContentModify("SettingModify", rp, s.setPendingConfigModify, nil)
+		return true, s.sendFileContentModify("SettingModify", rp, s.setPendingConfigModify, nil)
 	case localCategoryFolder:
-		return s.SendFolderModify(rp.Rel)
+		return true, s.SendFolderModify(rp.Rel)
 	default:
-		return nil
+		return false, nil
 	}
 }
 

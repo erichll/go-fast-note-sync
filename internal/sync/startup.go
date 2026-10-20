@@ -455,16 +455,18 @@ type syncProgress struct {
 	downloads      int
 	receivedChunks int
 	uploads        int
+	localRechecks  int
 }
 
 func (s *SyncService) syncProgressSnapshot() syncProgress {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	progress := syncProgress{
-		tasks:     [4]SyncTaskCounter{s.noteSyncTasks, s.fileSyncTasks, s.configSyncTasks, s.folderSyncTasks},
-		endFlags:  [4]bool{s.noteSyncEnd, s.fileSyncEnd, s.configSyncEnd, s.folderSyncEnd},
-		downloads: len(s.fileDownloadSessions),
-		uploads:   len(s.activeUploads),
+		tasks:         [4]SyncTaskCounter{s.noteSyncTasks, s.fileSyncTasks, s.configSyncTasks, s.folderSyncTasks},
+		endFlags:      [4]bool{s.noteSyncEnd, s.fileSyncEnd, s.configSyncEnd, s.folderSyncEnd},
+		downloads:     len(s.fileDownloadSessions),
+		uploads:       len(s.activeUploads),
+		localRechecks: s.localRechecks,
 	}
 	for _, tracker := range s.syncPages {
 		progress.pageCount += len(tracker.Pages)
@@ -485,7 +487,7 @@ func (s *SyncService) syncProgressSnapshot() syncProgress {
 func (s *SyncService) isSyncComplete() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.isSyncRequesting {
+	if s.isSyncRequesting || s.localRechecks != 0 {
 		return false
 	}
 	noteDone := s.noteSyncEnd && s.noteSyncTasks.Completed >= (s.noteSyncTasks.NeedUpload+s.noteSyncTasks.NeedModify+s.noteSyncTasks.NeedSyncMtime+s.noteSyncTasks.NeedDelete)

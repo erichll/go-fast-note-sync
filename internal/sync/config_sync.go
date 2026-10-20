@@ -83,27 +83,40 @@ func handleSettingSyncModify(data json.RawMessage, s *SyncService) {
 	if err := os.MkdirAll(filepath.Dir(rp.Abs), 0o755); err != nil {
 		return
 	}
-	s.addIgnoredFile(rp.Rel)
+	remoteHash := msg.ContentHash
+	if remoteHash == "" {
+		remoteHash = h.FileContent([]byte(msg.Content))
+	}
+	remoteSize := int64(len(msg.Content))
+	token := s.beginRemoteWrite(rp.Rel, remoteHash, remoteSize)
 	if err := os.WriteFile(rp.Abs, []byte(msg.Content), 0o644); err != nil {
+		s.abortRemoteWrite(rp.Rel, token)
 		log.Printf("[handler] SettingSyncModify write %q: %v", rp.Rel, err)
+		return
+	}
+	if gotHash, ok := s.computeLocalCategoryHash(rp.Abs, localCategorySetting); !ok || gotHash != remoteHash {
+		s.mu.Lock()
+		s.st.ConfigHashMap[rp.Rel] = state.FileHashEntry{Hash: remoteHash, Size: remoteSize}
+		s.mu.Unlock()
+		s.abortRemoteWrite(rp.Rel, token)
+		s.saveStateLog("SettingSyncModify local divergence")
 		return
 	}
 	if msg.MTime > 0 {
 		tm := unixMilli(msg.MTime)
 		_ = os.Chtimes(rp.Abs, tm, tm)
 	}
-	entry, err := fileEntry(rp.Abs, msg.ContentHash)
+	entry, err := fileEntry(rp.Abs, remoteHash)
 	if err != nil {
+		s.abortRemoteWrite(rp.Rel, token)
 		return
 	}
-	if entry.Hash == "" {
-		entry.Hash = h.FileContent([]byte(msg.Content))
-	}
 	s.mu.Lock()
-	s.st.ConfigHashMap[rp.Rel] = entry
+	s.st.ConfigHashMap[rp.Rel] = state.FileHashEntry{Hash: remoteHash, MTime: entry.MTime, Size: remoteSize}
 	delete(s.pendingConfigModifies, rp.Rel)
 	delete(s.st.PendingConfigModifies, rp.Rel)
 	delete(s.pendingConfigDeleteAcks, rp.Rel)
+	s.finishRemoteWriteLocked(rp.Rel, token, remoteHash, entry.MTime, remoteSize)
 	s.mu.Unlock()
 	s.saveStateLog("SettingSyncModify")
 }
@@ -153,25 +166,35 @@ func handleSettingSyncMtime(data json.RawMessage, s *SyncService) {
 	}
 	unlock := s.lockPath(rp.Rel)
 	defer unlock()
+	s.mu.Lock()
+	pending, ok := s.pendingConfigModifies[rp.Rel]
+	prev := s.st.ConfigHashMap[rp.Rel]
+	s.mu.Unlock()
+	baseHash := prev.Hash
+	baseSize := prev.Size
+	if ok {
+		baseHash = pending
+		baseSize = 0
+	}
+	token := s.beginRemoteWrite(rp.Rel, baseHash, baseSize)
 	if msg.MTime > 0 {
 		tm := unixMilli(msg.MTime)
 		_ = os.Chtimes(rp.Abs, tm, tm)
 	}
-	s.addIgnoredFile(rp.Rel)
-	s.mu.Lock()
-	s.lastSyncMtime[rp.Rel] = msg.MTime
-	pending, ok := s.pendingConfigModifies[rp.Rel]
-	s.mu.Unlock()
 	if ok {
 		if entry, err := fileEntry(rp.Abs, pending); err == nil {
 			s.mu.Lock()
 			s.st.ConfigHashMap[rp.Rel] = entry
 			delete(s.pendingConfigModifies, rp.Rel)
 			delete(s.st.PendingConfigModifies, rp.Rel)
+			s.finishRemoteWriteLocked(rp.Rel, token, pending, entry.MTime, 0)
+			s.lastSyncMtime[rp.Rel] = msg.MTime
 			s.mu.Unlock()
 			s.saveStateLog("SettingSyncMtime")
+			return
 		}
 	}
+	s.finishRemoteWriteBaseline(rp.Rel, rp.Abs, token, msg.MTime, prev.Hash, prev.Size)
 }
 
 func handleSettingSyncDelete(data json.RawMessage, s *SyncService) {
@@ -201,7 +224,7 @@ func handleSettingSyncDelete(data json.RawMessage, s *SyncService) {
 	delete(s.st.ConfigHashMap, rp.Rel)
 	delete(s.pendingConfigModifies, rp.Rel)
 	delete(s.st.PendingConfigModifies, rp.Rel)
-	delete(s.lastSyncMtime, rp.Rel)
+	s.clearRemoteWriteLocked(rp.Rel)
 	s.mu.Unlock()
 	s.saveStateLog("SettingSyncDelete")
 }

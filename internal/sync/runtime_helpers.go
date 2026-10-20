@@ -2,6 +2,7 @@ package sync
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,10 +13,35 @@ import (
 
 	"github.com/erichll/go-fast-note-sync/internal/config"
 	h "github.com/erichll/go-fast-note-sync/internal/hash"
+	"github.com/erichll/go-fast-note-sync/internal/local"
 	"github.com/erichll/go-fast-note-sync/internal/state"
 )
 
 const echoSuppressDelay = 500 * time.Millisecond
+
+type echoWriteState struct {
+	token    uint64
+	inFlight bool
+	hasSnap  bool
+	hash     string
+	prevHash string
+	recheck  bool // a callback saw the preceding version during this write
+	mtime    int64
+	size     int64
+	timer    *time.Timer
+}
+
+type echoTokenTimer struct {
+	token uint64
+	timer *time.Timer
+}
+
+type echoRenameState struct {
+	token  uint64
+	oldRel string
+	newRel string
+	timer  *time.Timer
+}
 
 // ConcurrencyManager limits local upload-style operations and provides one FIFO
 // lane for rename operations whose Ack does not carry a path.
@@ -262,39 +288,278 @@ func (s *SyncService) lockPath(key string) func() {
 	return func() { <-ch }
 }
 
-func (s *SyncService) addIgnoredFile(rel string) {
-	s.mu.Lock()
-	s.lastSyncMtime[rel] = time.Now().UnixMilli()
-	s.mu.Unlock()
-	time.AfterFunc(echoSuppressDelay, func() {
+func (s *SyncService) echoSuppressWindow() time.Duration {
+	// Match watcher.newWithBackend's fallback for non-positive delays too.
+	delay := config.Default().SyncUpdateDelay
+	if s != nil && s.cfg != nil && s.cfg.SyncUpdateDelay > 0 {
+		delay = s.cfg.SyncUpdateDelay
+	}
+	return time.Duration(delay)*time.Millisecond + echoSuppressDelay
+}
+
+func (s *SyncService) ensureEchoMapsLocked() {
+	if s.lastSyncMtime == nil {
+		s.lastSyncMtime = make(map[string]int64)
+	}
+	if s.lastSyncPathDeleted == nil {
+		s.lastSyncPathDeleted = make(map[string]struct{})
+	}
+	if s.lastSyncPathRenamed == nil {
+		s.lastSyncPathRenamed = make(map[string]struct{})
+	}
+	if s.echoWriteMeta == nil {
+		s.echoWriteMeta = make(map[string]echoWriteState)
+	}
+	if s.echoDeleteMeta == nil {
+		s.echoDeleteMeta = make(map[string]echoTokenTimer)
+	}
+	if s.echoRenameMeta == nil {
+		s.echoRenameMeta = make(map[string]echoRenameState)
+	}
+}
+
+func (s *SyncService) startEchoWriteTimerLocked(rel string, token uint64, window time.Duration) *time.Timer {
+	return time.AfterFunc(window, func() {
 		s.mu.Lock()
-		delete(s.lastSyncMtime, rel)
+		if cur, ok := s.echoWriteMeta[rel]; ok && cur.token == token && !cur.inFlight {
+			delete(s.echoWriteMeta, rel)
+			delete(s.lastSyncMtime, rel)
+		}
 		s.mu.Unlock()
 	})
+}
+
+func (s *SyncService) beginRemoteWrite(rel, contentHash string, size int64) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureEchoMapsLocked()
+	s.clearDeleteEchoLocked(rel)
+	s.echoSeq++
+	token := s.echoSeq
+	var prevHash string
+	var recheck bool
+	if old, ok := s.echoWriteMeta[rel]; ok {
+		recheck = old.recheck
+		if old.timer != nil {
+			old.timer.Stop()
+		}
+		if old.hasSnap {
+			prevHash = old.hash
+		}
+	}
+	now := time.Now().UnixMilli()
+	s.lastSyncMtime[rel] = now
+	s.echoWriteMeta[rel] = echoWriteState{
+		token:    token,
+		inFlight: true,
+		hasSnap:  contentHash != "",
+		hash:     contentHash,
+		prevHash: prevHash,
+		recheck:  recheck,
+		mtime:    now,
+		size:     size,
+	}
+	return token
+}
+
+func (s *SyncService) finishRemoteWriteLocked(rel string, token uint64, contentHash string, mtime, size int64) {
+	s.ensureEchoMapsLocked()
+	cur, ok := s.echoWriteMeta[rel]
+	if !ok || cur.token != token {
+		return
+	}
+	if cur.timer != nil {
+		cur.timer.Stop()
+	}
+	if mtime > 0 {
+		s.lastSyncMtime[rel] = mtime
+	}
+	window := s.echoSuppressWindow()
+	timer := s.startEchoWriteTimerLocked(rel, token, window)
+	s.echoWriteMeta[rel] = echoWriteState{
+		token:    token,
+		inFlight: false,
+		hasSnap:  true,
+		hash:     contentHash,
+		mtime:    mtime,
+		size:     size,
+		timer:    timer,
+	}
+	if cur.recheck {
+		s.recheckLocalWriteLocked(rel)
+	}
+}
+
+// A callback matching the preceding remote version may be either a delayed
+// echo or a genuine undo after replacement. Re-read it only after the remote
+// operation settles. Never send under s.mu or while retaining the path lock.
+func (s *SyncService) recheckLocalWriteLocked(rel string) {
+	s.localRechecks++
+	go func() {
+		defer func() {
+			s.mu.Lock()
+			s.localRechecks--
+			s.mu.Unlock()
+		}()
+		unlock := s.lockPath(rel)
+		unlock()
+		s.HandleLocalModify(local.PathEvent{Path: rel})
+	}()
+}
+
+func (s *SyncService) finishRemoteWriteBaseline(rel, abs string, token uint64, msgMTime int64, baselineHash string, baselineSize int64) {
+	diskMTime := msgMTime
+	if info, err := os.Stat(abs); err == nil {
+		diskMTime = info.ModTime().UnixMilli()
+	}
+	s.mu.Lock()
+	s.finishRemoteWriteLocked(rel, token, baselineHash, diskMTime, baselineSize)
+	s.lastSyncMtime[rel] = msgMTime
+	s.mu.Unlock()
+}
+
+func (s *SyncService) abortRemoteWrite(rel string, token uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cur, ok := s.echoWriteMeta[rel]; ok && cur.token == token {
+		if cur.timer != nil {
+			cur.timer.Stop()
+		}
+		delete(s.echoWriteMeta, rel)
+		delete(s.lastSyncMtime, rel)
+		if cur.recheck {
+			s.recheckLocalWriteLocked(rel)
+		}
+	}
+}
+
+// Real local moves invalidate evidence for both endpoints, including a
+// destination-only rename marker which clearDeleteEcho intentionally retains.
+func (s *SyncService) invalidateLocalRenameEchoes(oldRel, newRel string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, rel := range []string{oldRel, newRel} {
+		s.clearRemoteWriteLocked(rel)
+		s.clearDeleteEchoLocked(rel)
+		if cur, ok := s.echoRenameMeta[rel]; ok && cur.timer != nil {
+			cur.timer.Stop()
+		}
+		delete(s.echoRenameMeta, rel)
+		delete(s.lastSyncPathRenamed, rel)
+	}
+}
+
+func (s *SyncService) clearRemoteWriteLocked(rel string) {
+	if cur, ok := s.echoWriteMeta[rel]; ok && cur.timer != nil {
+		cur.timer.Stop()
+	}
+	delete(s.echoWriteMeta, rel)
+	delete(s.lastSyncMtime, rel)
+}
+
+func (s *SyncService) clearRemoteWrite(rel string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearRemoteWriteLocked(rel)
+}
+
+func (s *SyncService) clearDeleteEchoLocked(rel string) {
+	if cur, ok := s.echoDeleteMeta[rel]; ok && cur.timer != nil {
+		cur.timer.Stop()
+	}
+	delete(s.echoDeleteMeta, rel)
+	delete(s.lastSyncPathDeleted, rel)
+	if cur, ok := s.echoRenameMeta[rel]; ok && cur.oldRel == rel {
+		if cur.timer != nil {
+			cur.timer.Stop()
+		}
+		delete(s.echoRenameMeta, rel)
+		delete(s.lastSyncPathRenamed, rel)
+	}
+}
+
+func (s *SyncService) clearDeleteEcho(rel string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.clearDeleteEchoLocked(rel)
+}
+
+func (s *SyncService) addIgnoredFile(rel string) {
+	s.mu.Lock()
+	s.ensureEchoMapsLocked()
+	s.clearDeleteEchoLocked(rel)
+	s.echoSeq++
+	token := s.echoSeq
+	if old, ok := s.echoWriteMeta[rel]; ok && old.timer != nil {
+		old.timer.Stop()
+	}
+	now := time.Now().UnixMilli()
+	s.lastSyncMtime[rel] = now
+	window := s.echoSuppressWindow()
+	timer := s.startEchoWriteTimerLocked(rel, token, window)
+	s.echoWriteMeta[rel] = echoWriteState{token: token, mtime: now, timer: timer}
+	s.mu.Unlock()
 }
 
 func (s *SyncService) markDeleted(rel string) {
 	s.mu.Lock()
+	s.ensureEchoMapsLocked()
+	s.echoSeq++
+	token := s.echoSeq
+	if old, ok := s.echoDeleteMeta[rel]; ok && old.timer != nil {
+		old.timer.Stop()
+	}
 	s.lastSyncPathDeleted[rel] = struct{}{}
-	s.mu.Unlock()
-	time.AfterFunc(echoSuppressDelay, func() {
+	window := s.echoSuppressWindow()
+	timer := time.AfterFunc(window, func() {
 		s.mu.Lock()
-		delete(s.lastSyncPathDeleted, rel)
+		if cur, ok := s.echoDeleteMeta[rel]; ok && cur.token == token {
+			delete(s.echoDeleteMeta, rel)
+			delete(s.lastSyncPathDeleted, rel)
+		}
 		s.mu.Unlock()
 	})
+	s.echoDeleteMeta[rel] = echoTokenTimer{token: token, timer: timer}
+	s.mu.Unlock()
 }
 
 func (s *SyncService) markRenamed(oldRel, newRel string) {
 	s.mu.Lock()
-	s.lastSyncPathRenamed[oldRel] = struct{}{}
-	s.lastSyncPathRenamed[newRel] = struct{}{}
+	s.ensureEchoMapsLocked()
+	s.echoSeq++
+	token := s.echoSeq
+	window := s.echoSuppressWindow()
+	for _, p := range []string{oldRel, newRel} {
+		if p == "" {
+			continue
+		}
+		if old, ok := s.echoRenameMeta[p]; ok && old.timer != nil {
+			old.timer.Stop()
+		}
+		s.lastSyncPathRenamed[p] = struct{}{}
+		pathKey := p
+		timer := time.AfterFunc(window, func() {
+			s.mu.Lock()
+			if cur, ok := s.echoRenameMeta[pathKey]; ok && cur.token == token {
+				delete(s.echoRenameMeta, pathKey)
+				delete(s.lastSyncPathRenamed, pathKey)
+			}
+			s.mu.Unlock()
+		})
+		s.echoRenameMeta[p] = echoRenameState{token: token, oldRel: oldRel, newRel: newRel, timer: timer}
+	}
 	s.mu.Unlock()
-	time.AfterFunc(echoSuppressDelay, func() {
-		s.mu.Lock()
-		delete(s.lastSyncPathRenamed, oldRel)
-		delete(s.lastSyncPathRenamed, newRel)
-		s.mu.Unlock()
-	})
+}
+
+func pathConfirmedMissing(abs string) (bool, error) {
+	_, err := os.Lstat(abs)
+	if err == nil {
+		return false, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	return false, err
 }
 
 func fileEntry(absPath, contentHash string) (state.FileHashEntry, error) {
@@ -575,7 +840,12 @@ func (s *SyncService) sendFileContentModify(action string, rp resolvedPath, pend
 	}
 	if action == "NoteModify" {
 		s.mu.Lock()
-		if entry, ok := s.st.FileHashMap[rp.Rel]; ok && entry.Hash != "" {
+		if meta, ok := s.echoWriteMeta[rp.Rel]; ok && meta.inFlight && meta.hash != "" {
+			// The incoming revision is already known remotely even if its
+			// local write has not finalized. Preserve optimistic conflict
+			// checks for an edit delivered during that write.
+			payload["baseHash"] = meta.hash
+		} else if entry, ok := s.st.FileHashMap[rp.Rel]; ok && entry.Hash != "" {
 			payload["baseHash"] = entry.Hash
 		} else {
 			payload["baseHashMissing"] = true

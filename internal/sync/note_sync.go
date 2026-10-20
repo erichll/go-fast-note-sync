@@ -86,32 +86,45 @@ func handleNoteSyncModify(data json.RawMessage, s *SyncService) {
 		log.Printf("[handler] NoteSyncModify mkdir %q: %v", rp.Rel, err)
 		return
 	}
-	s.addIgnoredFile(rp.Rel)
+	remoteHash := msg.ContentHash
+	if remoteHash == "" {
+		remoteHash = h.Text(msg.Content)
+	}
+	remoteSize := int64(len(msg.Content))
+	token := s.beginRemoteWrite(rp.Rel, remoteHash, remoteSize)
 	if err := atomicWriteFile(rp.Abs, []byte(msg.Content)); err != nil {
-		s.mu.Lock()
-		delete(s.lastSyncMtime, rp.Rel)
-		s.mu.Unlock()
+		s.abortRemoteWrite(rp.Rel, token)
 		log.Printf("[handler] NoteSyncModify write %q: %v", rp.Rel, err)
 		return
 	}
 	s.updateSyncTime("note", msg.LastTime)
+	if gotHash, ok := s.computeLocalCategoryHash(rp.Abs, localCategoryNote); !ok || gotHash != remoteHash {
+		// The remote revision was applied, but an editor changed the disk
+		// before finalization. Keep its known baseHash for the local retry,
+		// without clearing pending edits or caching their filesystem mtime.
+		s.mu.Lock()
+		s.st.FileHashMap[rp.Rel] = state.FileHashEntry{Hash: remoteHash, Size: remoteSize}
+		s.mu.Unlock()
+		s.abortRemoteWrite(rp.Rel, token)
+		s.saveStateLog("NoteSyncModify local divergence")
+		return
+	}
 	mtime := msg.MTime
 	if mtime > 0 {
 		tm := unixMilli(mtime)
 		_ = os.Chtimes(rp.Abs, tm, tm)
 	}
-	entry, err := fileEntry(rp.Abs, msg.ContentHash)
+	entry, err := fileEntry(rp.Abs, remoteHash)
 	if err != nil {
+		s.abortRemoteWrite(rp.Rel, token)
 		return
 	}
-	if entry.Hash == "" {
-		entry.Hash = h.Text(msg.Content)
-	}
 	s.mu.Lock()
-	s.st.FileHashMap[rp.Rel] = entry
+	s.st.FileHashMap[rp.Rel] = state.FileHashEntry{Hash: remoteHash, MTime: entry.MTime, Size: remoteSize}
 	delete(s.pendingNoteModifies, rp.Rel)
 	delete(s.st.PendingNoteModifies, rp.Rel)
 	delete(s.pendingNoteDeleteAcks, rp.Rel)
+	s.finishRemoteWriteLocked(rp.Rel, token, remoteHash, entry.MTime, remoteSize)
 	s.mu.Unlock()
 	s.saveStateLog("NoteSyncModify")
 }
@@ -156,25 +169,35 @@ func handleNoteSyncMtime(data json.RawMessage, s *SyncService) {
 	}
 	unlock := s.lockPath(rp.Rel)
 	defer unlock()
+	s.mu.Lock()
+	pending, ok := s.pendingNoteModifies[rp.Rel]
+	prev := s.st.FileHashMap[rp.Rel]
+	s.mu.Unlock()
+	baseHash := prev.Hash
+	baseSize := prev.Size
+	if ok {
+		baseHash = pending
+		baseSize = 0
+	}
+	token := s.beginRemoteWrite(rp.Rel, baseHash, baseSize)
 	if msg.MTime > 0 {
 		tm := unixMilli(msg.MTime)
 		_ = os.Chtimes(rp.Abs, tm, tm)
 	}
-	s.addIgnoredFile(rp.Rel)
-	s.mu.Lock()
-	s.lastSyncMtime[rp.Rel] = msg.MTime
-	pending, ok := s.pendingNoteModifies[rp.Rel]
-	s.mu.Unlock()
 	if ok {
 		if entry, err := fileEntry(rp.Abs, pending); err == nil {
 			s.mu.Lock()
 			s.st.FileHashMap[rp.Rel] = entry
 			delete(s.pendingNoteModifies, rp.Rel)
 			delete(s.st.PendingNoteModifies, rp.Rel)
+			s.finishRemoteWriteLocked(rp.Rel, token, pending, entry.MTime, 0)
+			s.lastSyncMtime[rp.Rel] = msg.MTime
 			s.mu.Unlock()
 			s.saveStateLog("NoteSyncMtime")
+			return
 		}
 	}
+	s.finishRemoteWriteBaseline(rp.Rel, rp.Abs, token, msg.MTime, prev.Hash, prev.Size)
 }
 
 func handleNoteSyncDelete(data json.RawMessage, s *SyncService) {
@@ -216,7 +239,7 @@ func handleNoteSyncDelete(data json.RawMessage, s *SyncService) {
 	delete(s.st.FileHashMap, rp.Rel)
 	delete(s.pendingNoteModifies, rp.Rel)
 	delete(s.st.PendingNoteModifies, rp.Rel)
-	delete(s.lastSyncMtime, rp.Rel)
+	s.clearRemoteWriteLocked(rp.Rel)
 	s.mu.Unlock()
 	s.saveStateLog("NoteSyncDelete")
 }
@@ -238,12 +261,19 @@ func handleNoteSyncRename(data json.RawMessage, s *SyncService) {
 	unlock := s.lockPath(oldRP.Rel + "->" + newRP.Rel)
 	defer unlock()
 
-	if _, err := os.Stat(oldRP.Abs); err == nil {
+	if oldInfo, err := os.Stat(oldRP.Abs); err == nil {
 		if err := os.MkdirAll(filepath.Dir(newRP.Abs), 0o755); err != nil {
 			return
 		}
-		s.addIgnoredFile(newRP.Rel)
+		snapHash := msg.ContentHash
+		if snapHash == "" {
+			if got, ok := s.computeLocalCategoryHash(oldRP.Abs, localCategoryNote); ok {
+				snapHash = got
+			}
+		}
+		token := s.beginRemoteWrite(newRP.Rel, snapHash, oldInfo.Size())
 		if err := os.Rename(oldRP.Abs, newRP.Abs); err != nil {
+			s.abortRemoteWrite(newRP.Rel, token)
 			log.Printf("[handler] NoteSyncRename rename %q -> %q: %v", oldRP.Rel, newRP.Rel, err)
 			return
 		}
@@ -251,6 +281,7 @@ func handleNoteSyncRename(data json.RawMessage, s *SyncService) {
 		s.mu.Lock()
 		entry := s.st.FileHashMap[oldRP.Rel]
 		delete(s.st.FileHashMap, oldRP.Rel)
+		s.clearRemoteWriteLocked(oldRP.Rel)
 		entry.Hash = msg.ContentHash
 		if entry.Hash == "" {
 			entry.Hash = h.Text("")
@@ -260,6 +291,7 @@ func handleNoteSyncRename(data json.RawMessage, s *SyncService) {
 			entry.Size = info.Size()
 		}
 		s.st.FileHashMap[newRP.Rel] = entry
+		s.finishRemoteWriteLocked(newRP.Rel, token, snapHash, entry.MTime, entry.Size)
 		s.mu.Unlock()
 		s.saveStateLog("NoteSyncRename")
 		return

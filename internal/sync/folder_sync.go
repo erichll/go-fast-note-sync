@@ -74,6 +74,7 @@ func handleFolderSyncModify(data json.RawMessage, s *SyncService) {
 
 	unlock := s.lockPath(rp.Rel)
 	defer unlock()
+	s.addIgnoredFile(rp.Rel)
 	if err := os.MkdirAll(rp.Abs, 0o755); err != nil {
 		log.Printf("[handler] FolderSyncModify mkdir %q: %v", rp.Rel, err)
 	}

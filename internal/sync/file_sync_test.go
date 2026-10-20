@@ -118,6 +118,10 @@ func TestFileDownloadChunksMergeAndUpdateState(t *testing.T) {
 		defer svc.mu.Unlock()
 		return len(svc.fileDownloadSessions) == 0
 	})
+	// Session removal precedes cleanup/save; drain the merger's path lock
+	// before TempDir cleanup can race its remaining filesystem operations.
+	unlockMerge := svc.lockPath("assets/file.bin")
+	unlockMerge()
 	got, err := os.ReadFile(filepath.Join(dir, "assets", "file.bin"))
 	if err != nil {
 		t.Fatalf("read downloaded file: %v", err)
@@ -168,6 +172,8 @@ func TestFileDownloadEmptyFileCompletes(t *testing.T) {
 		defer svc.mu.Unlock()
 		return len(svc.fileDownloadSessions) == 0
 	})
+	unlockMerge := svc.lockPath("empty.bin")
+	unlockMerge()
 	info, err := os.Stat(filepath.Join(dir, "empty.bin"))
 	if err != nil {
 		t.Fatalf("stat empty file: %v", err)
@@ -210,6 +216,8 @@ func TestFileDownloadHashMismatchAbortsWithoutStateCommit(t *testing.T) {
 		defer svc.mu.Unlock()
 		return len(svc.fileDownloadSessions) == 0
 	})
+	unlockMerge := svc.lockPath("bad.bin")
+	unlockMerge()
 	if _, err := os.Stat(filepath.Join(dir, "bad.bin")); !os.IsNotExist(err) {
 		t.Fatalf("bad.bin should not be written, stat err=%v", err)
 	}
@@ -297,6 +305,8 @@ func TestFileSyncChunkDownloadDisorderEmptyThenUpdateCompletes(t *testing.T) {
 		defer svc.mu.Unlock()
 		return len(svc.fileDownloadSessions) == 0
 	})
+	unlockMerge := svc.lockPath("late-empty.bin")
+	unlockMerge()
 	if len(svc.conn.(*fakeWSConn).written) != 0 {
 		t.Fatalf("disorder empty completion should not send FileChunkDownload, wrote %#v", svc.conn.(*fakeWSConn).written)
 	}

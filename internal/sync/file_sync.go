@@ -383,7 +383,7 @@ func handleFileSyncDelete(data json.RawMessage, s *SyncService) {
 	delete(s.st.FileHashMap, rp.Rel)
 	delete(s.pendingUploadHashes, rp.Rel)
 	delete(s.st.PendingUploadHashes, rp.Rel)
-	delete(s.lastSyncMtime, rp.Rel)
+	s.clearRemoteWriteLocked(rp.Rel)
 	s.mu.Unlock()
 	s.saveStateLog("FileSyncDelete")
 }
@@ -403,25 +403,35 @@ func handleFileSyncMtime(data json.RawMessage, s *SyncService) {
 	}
 	unlock := s.lockPath(rp.Rel)
 	defer unlock()
+	s.mu.Lock()
+	pending, ok := s.pendingUploadHashes[rp.Rel]
+	prev := s.st.FileHashMap[rp.Rel]
+	s.mu.Unlock()
+	baseHash := prev.Hash
+	baseSize := prev.Size
+	if ok {
+		baseHash = pending
+		baseSize = 0
+	}
+	token := s.beginRemoteWrite(rp.Rel, baseHash, baseSize)
 	if msg.MTime > 0 {
 		tm := unixMilli(msg.MTime)
 		_ = os.Chtimes(rp.Abs, tm, tm)
 	}
-	s.addIgnoredFile(rp.Rel)
-	s.mu.Lock()
-	s.lastSyncMtime[rp.Rel] = msg.MTime
-	pending, ok := s.pendingUploadHashes[rp.Rel]
-	s.mu.Unlock()
 	if ok {
 		if entry, err := fileEntry(rp.Abs, pending); err == nil {
 			s.mu.Lock()
 			s.st.FileHashMap[rp.Rel] = entry
 			delete(s.pendingUploadHashes, rp.Rel)
 			delete(s.st.PendingUploadHashes, rp.Rel)
+			s.finishRemoteWriteLocked(rp.Rel, token, pending, entry.MTime, 0)
+			s.lastSyncMtime[rp.Rel] = msg.MTime
 			s.mu.Unlock()
 			s.saveStateLog("FileSyncMtime")
+			return
 		}
 	}
+	s.finishRemoteWriteBaseline(rp.Rel, rp.Abs, token, msg.MTime, prev.Hash, prev.Size)
 }
 
 func handleFileSyncRename(data json.RawMessage, s *SyncService) {
@@ -440,12 +450,19 @@ func handleFileSyncRename(data json.RawMessage, s *SyncService) {
 	}
 	unlock := s.lockPath(oldRP.Rel + "->" + newRP.Rel)
 	defer unlock()
-	if _, err := os.Stat(oldRP.Abs); err == nil {
+	if oldInfo, err := os.Stat(oldRP.Abs); err == nil {
 		if err := os.MkdirAll(filepath.Dir(newRP.Abs), 0o755); err != nil {
 			return
 		}
-		s.addIgnoredFile(newRP.Rel)
+		snapHash := msg.ContentHash
+		if snapHash == "" {
+			if got, ok := s.computeLocalCategoryHash(oldRP.Abs, localCategoryFile); ok {
+				snapHash = got
+			}
+		}
+		token := s.beginRemoteWrite(newRP.Rel, snapHash, oldInfo.Size())
 		if err := os.Rename(oldRP.Abs, newRP.Abs); err != nil {
+			s.abortRemoteWrite(newRP.Rel, token)
 			log.Printf("[handler] FileSyncRename rename %q -> %q: %v", oldRP.Rel, newRP.Rel, err)
 			return
 		}
@@ -453,12 +470,14 @@ func handleFileSyncRename(data json.RawMessage, s *SyncService) {
 		s.mu.Lock()
 		entry := s.st.FileHashMap[oldRP.Rel]
 		delete(s.st.FileHashMap, oldRP.Rel)
+		s.clearRemoteWriteLocked(oldRP.Rel)
 		entry.Hash = msg.ContentHash
 		if info, statErr := os.Stat(newRP.Abs); statErr == nil {
 			entry.MTime = info.ModTime().UnixMilli()
 			entry.Size = info.Size()
 		}
 		s.st.FileHashMap[newRP.Rel] = entry
+		s.finishRemoteWriteLocked(newRP.Rel, token, snapHash, entry.MTime, entry.Size)
 		s.mu.Unlock()
 		s.saveStateLog("FileSyncRename")
 		return
@@ -731,17 +750,19 @@ func (s *SyncService) mergeDownloadSession(session *FileDownloadSession) {
 		return
 	}
 	defer func() { _ = os.Remove(commitCandidate) }()
-	s.addIgnoredFile(rp.Rel)
+	token := s.beginRemoteWrite(rp.Rel, session.ContentHash, session.Size)
 
 	s.mu.Lock()
 	current := s.fileDownloadSessions[session.SessionID]
 	if current != session || session.Cancelled {
 		s.mu.Unlock()
+		s.abortRemoteWrite(rp.Rel, token)
 		_ = os.RemoveAll(session.TempDir)
 		return
 	}
 	if err := replaceFile(commitCandidate, rp.Abs); err != nil {
 		s.mu.Unlock()
+		s.abortRemoteWrite(rp.Rel, token)
 		s.abortDownloadSession(session.SessionID, "replace failed")
 		return
 	}
@@ -749,7 +770,14 @@ func (s *SyncService) mergeDownloadSession(session *FileDownloadSession) {
 		tm := unixMilli(session.MTime)
 		_ = os.Chtimes(rp.Abs, tm, tm)
 	}
+	diskMTime := session.MTime
+	diskSize := session.Size
+	if info, statErr := os.Stat(rp.Abs); statErr == nil {
+		diskMTime = info.ModTime().UnixMilli()
+		diskSize = info.Size()
+	}
 	s.st.FileHashMap[rp.Rel] = state.FileHashEntry{Hash: session.ContentHash, MTime: session.MTime, Size: session.Size}
+	s.finishRemoteWriteLocked(rp.Rel, token, session.ContentHash, diskMTime, diskSize)
 	s.lastSyncMtime[rp.Rel] = session.MTime
 	if session.LastTime > s.st.FileSyncTime {
 		s.st.FileSyncTime = session.LastTime
