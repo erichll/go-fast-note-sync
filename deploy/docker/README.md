@@ -57,7 +57,7 @@ Alternatively, build via Compose from `deploy/docker/`:
 docker compose build
 ```
 
-The Dockerfile uses a multi-stage build: Go 1.24.5-alpine compiles a static binary; `alpine:3.21` provides CA certificates and a non-root user.
+The Dockerfile uses a multi-stage build: `golang:1.27.3-alpine` compiles a static binary; `alpine:3.21` provides CA certificates and a non-root user. Go 1.27.3 includes the crypto/x509 fix for CVE-2026-111943. Existing binaries and images must be rebuilt and redeployed to receive the fix; updating the host Go installation or CA certificates alone does not update their embedded Go standard library.
 
 ## 3. Configure
 

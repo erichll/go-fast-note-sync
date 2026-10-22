@@ -17,7 +17,7 @@ A Linux/headless Go CLI daemon that syncs a local [Obsidian](https://obsidian.md
 
 ## Requirements
 
-- Go 1.24.5+
+- Go 1.27.3+ (includes the crypto/x509 fix for CVE-2026-111943; rebuild older binaries)
 - A reachable `fast-note-sync-service` instance with a valid API token
 - Linux (primary target); other POSIX systems may work but are untested
 

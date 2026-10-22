@@ -5,6 +5,10 @@ on:
     tags:
       - 'v*'
 
+# setup-go reads the exact patched version from go.mod; do not silently switch toolchains.
+env:
+  GOTOOLCHAIN: local
+
 permissions:
   contents: write
   packages: write
@@ -21,6 +25,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
 
       - name: fmt
@@ -35,7 +40,7 @@ jobs:
       - name: lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.12.2
+          version: v2.15.0
 
       - name: test
         run: go test -race ./... -coverprofile=coverage.out -covermode=atomic
@@ -102,6 +107,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
 
       - uses: docker/setup-buildx-action@v4

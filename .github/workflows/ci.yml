@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# setup-go reads the exact patched version from go.mod; do not silently switch toolchains.
+env:
+  GOTOOLCHAIN: local
+
 jobs:
   ci:
     runs-on: ubuntu-latest
@@ -17,6 +21,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          check-latest: true
           cache: true
 
       - name: fmt
@@ -31,7 +36,7 @@ jobs:
       - name: lint
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.12.2
+          version: v2.15.0
 
       - name: test
         run: go test -race ./... -coverprofile=coverage.out -covermode=atomic

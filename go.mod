@@ -1,6 +1,6 @@
 module github.com/erichll/go-fast-note-sync
 
-go 1.24.5
+go 1.27.3
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0

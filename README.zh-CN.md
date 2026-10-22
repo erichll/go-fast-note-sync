@@ -17,7 +17,7 @@
 
 ## 环境要求
 
-- Go 1.24.5+
+- Go 1.27.3+（包含 CVE-2026-111943 的 crypto/x509 修复；旧二进制需重新构建）
 - 可访问的 `fast-note-sync-service` 实例及有效的 API Token
 - Linux（主要目标平台）；其他 POSIX 系统可能可用，但未经测试
 
